@@ -15,4 +15,9 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    port: 8080,        // 改端口
+    host: true,        // 允许局域网访问（0.0.0.0）
+    strictPort: true,  // 端口被占用就直接报错，不自动换
+  },
 })
