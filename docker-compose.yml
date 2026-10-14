@@ -1,0 +1,14 @@
+services:
+  web:
+    build: .
+    container_name: my-vue-app
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    # 如果要用 /api 代理后端：
+    # depends_on:
+    #   - backend
+
+  # backend:
+  #   image: my-backend
+  #   ...
