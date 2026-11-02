@@ -14,6 +14,8 @@ type Friend = {
   initials: string
   status: string
   activity: string
+  activityTitle: string
+  activityIcon: string
   color: string
   online: boolean
 }
@@ -22,46 +24,17 @@ const activeTab = ref('在线')
 const searchQuery = ref('')
 const friendRequestName = ref('')
 const requestSent = ref(false)
+const isSendingRequest = ref(false)
+const requestError = ref('')
+const isLoading = ref(true)
+const loadError = ref('')
 const activeServer = ref('N')
 const tabs = ['在线', '全部', '待处理', '添加好友']
-const friends: Friend[] = [
-  {
-    name: 'Luna',
-    initials: 'L',
-    status: '正在听音乐',
-    activity: '正在听《Midnight City》',
-    color: '#b67bea',
-    online: true,
-  },
-  {
-    name: 'Mika',
-    initials: 'M',
-    status: '正在玩 Minecraft',
-    activity: 'Minecraft · 生存模式',
-    color: '#58a6a0',
-    online: true,
-  },
-  {
-    name: 'Kai',
-    initials: 'K',
-    status: '暂时离开',
-    activity: '上次在线 12 分钟前',
-    color: '#e49b62',
-    online: false,
-  },
-  {
-    name: 'Sora',
-    initials: 'S',
-    status: '在线',
-    activity: '随时可以开始聊天',
-    color: '#6f8de8',
-    online: true,
-  },
-]
+const friends = ref<Friend[]>([])
 
 const visibleFriends = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
-  return friends.filter((friend) => {
+  return friends.value.filter((friend) => {
     const matchesSearch = friend.name.toLowerCase().includes(query)
     const matchesTab =
       activeTab.value === '全部' ||
@@ -71,13 +44,57 @@ const visibleFriends = computed(() => {
   })
 })
 
+async function loadHome() {
+  isLoading.value = true
+  loadError.value = ''
+  try {
+    const response = await fetch('/api/home')
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { friends?: Friend[] }
+    }
+
+    if (!response.ok || result.code !== 0 || !result.data?.friends) {
+      throw new Error(result.message || result.msg || '加载好友数据失败')
+    }
+
+    friends.value = result.data.friends
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '加载好友数据失败，请稍后重试'
+  } finally {
+    isLoading.value = false
+  }
+}
+
 const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
 
-function sendFriendRequest() {
+async function sendFriendRequest() {
   if (!friendRequestName.value.trim()) return
-  requestSent.value = true
+  isSendingRequest.value = true
+  requestError.value = ''
+  try {
+    const response = await fetch('/api/friend-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: friendRequestName.value.trim() }),
+    })
+    const result = await response.json() as { code?: number; message?: string; msg?: string }
+    if (!response.ok || result.code !== 0) {
+      throw new Error(result.message || result.msg || '发送好友请求失败')
+    }
+    requestSent.value = true
+  } catch (error) {
+    requestError.value =
+      error instanceof Error ? error.message : '发送好友请求失败，请稍后重试'
+  } finally {
+    isSendingRequest.value = false
+  }
 }
+
+loadHome()
 </script>
 
 <template>
@@ -158,7 +175,7 @@ function sendFriendRequest() {
                 role="tab"
                 :aria-selected="activeTab === tab"
                 :class="{ selected: activeTab === tab, 'add-friend-tab': tab === '添加好友' }"
-                @click="activeTab = tab; requestSent = false"
+                @click="activeTab = tab; requestSent = false; requestError = ''"
               >
                 {{ tab }}
               </button>
@@ -178,19 +195,27 @@ function sendFriendRequest() {
                 aria-label="好友用户名"
                 placeholder="输入用户名，例如 Luna"
               />
-              <button type="submit" :disabled="!friendRequestName.trim() || requestSent">
-                {{ requestSent ? '已发送请求' : '发送好友请求' }}
+              <button type="submit" :disabled="!friendRequestName.trim() || requestSent || isSendingRequest">
+                {{ isSendingRequest ? '正在发送…' : requestSent ? '已发送请求' : '发送好友请求' }}
               </button>
             </form>
             <p v-if="requestSent" class="request-feedback" role="status">好友请求已发送。</p>
+            <p v-if="requestError" class="request-error" role="alert">{{ requestError }}</p>
           </div>
 
           <template v-else>
             <h2 class="section-heading">
               {{ activeTab === '待处理' ? '待处理的好友请求' : activeTab === '全部' ? '所有好友' : '在线' }}
-              <span>{{ visibleFriends.length }}</span>
+              <span>{{ isLoading ? '…' : visibleFriends.length }}</span>
             </h2>
-            <div v-if="visibleFriends.length" class="friend-list">
+            <div v-if="isLoading" class="empty-state" role="status">
+              <strong>正在加载好友…</strong>
+            </div>
+            <div v-else-if="loadError" class="empty-state" role="alert">
+              <strong>{{ loadError }}</strong>
+              <button class="retry-button" @click="loadHome">重试</button>
+            </div>
+            <div v-else-if="visibleFriends.length" class="friend-list">
               <article v-for="friend in visibleFriends" :key="friend.name" class="friend-row">
                 <span class="avatar friend-avatar" :style="{ '--avatar-color': friend.color }">
                   {{ friend.initials }}
@@ -218,7 +243,11 @@ function sendFriendRequest() {
         <aside class="activity-panel">
           <h2>活跃动态</h2>
           <p class="activity-intro">看看你的朋友们正在做什么。</p>
-          <article v-for="friend in friends.filter((item) => item.online).slice(0, 2)" :key="friend.name" class="activity-card">
+          <article
+            v-for="friend in friends.filter((item) => item.online && item.activityTitle).slice(0, 2)"
+            :key="friend.name"
+            class="activity-card"
+          >
             <div class="activity-user">
               <span class="avatar activity-avatar" :style="{ '--avatar-color': friend.color }">
                 {{ friend.initials }}<i class="online"></i>
@@ -226,8 +255,8 @@ function sendFriendRequest() {
               <div><strong>{{ friend.name }}</strong><small>正在 {{ friend.status.replace('正在', '') }}</small></div>
             </div>
             <div class="activity-detail">
-              <span class="activity-cover">{{ friend.name === 'Luna' ? '♫' : '▦' }}</span>
-              <span><strong>{{ friend.name === 'Luna' ? '音乐' : 'Minecraft' }}</strong><small>{{ friend.activity }}</small></span>
+              <span class="activity-cover">{{ friend.activityIcon }}</span>
+              <span><strong>{{ friend.activityTitle }}</strong><small>{{ friend.activity }}</small></span>
             </div>
             <button class="join-button">一起加入</button>
           </article>
@@ -873,6 +902,18 @@ button {
 .add-friend-panel .request-feedback {
   margin-top: 12px;
   color: #57f287;
+}
+
+.add-friend-panel .request-error {
+  margin-top: 12px;
+  color: #f2a6a6;
+}
+
+.retry-button {
+  padding: 7px 12px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: white;
 }
 
 .activity-panel {
