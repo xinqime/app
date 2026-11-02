@@ -6,6 +6,9 @@ The app includes a login/register screen and a Discord-inspired friends home pag
 After a successful login, the app navigates to `/home`. When mock authentication is
 enabled with `VITE_USE_MOCK=true`, use `admin` / `123456` to sign in.
 
+The home page also includes an interest-tag-based group chat directory. Group chat
+mock data and direct-join responses are served by the shared MSW handlers.
+
 ## Recommended IDE Setup
 
 [VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).

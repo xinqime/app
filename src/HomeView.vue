@@ -20,6 +20,19 @@ type Friend = {
   online: boolean
 }
 
+type GroupChat = {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  memberCount: number
+  onlineCount: number
+  icon: string
+  color: string
+  joined: boolean
+}
+
+const activeView = ref<'friends' | 'groups'>('friends')
 const activeTab = ref('在线')
 const searchQuery = ref('')
 const friendRequestName = ref('')
@@ -31,6 +44,11 @@ const loadError = ref('')
 const activeServer = ref('N')
 const tabs = ['在线', '全部', '待处理', '添加好友']
 const friends = ref<Friend[]>([])
+const groupChats = ref<GroupChat[]>([])
+const selectedInterest = ref('全部')
+const groupLoadError = ref('')
+const joiningGroupId = ref('')
+const groupJoinError = ref('')
 
 const visibleFriends = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -43,6 +61,17 @@ const visibleFriends = computed(() => {
     return matchesSearch && matchesTab
   })
 })
+
+const interestTags = computed(() => [
+  '全部',
+  ...new Set(groupChats.value.flatMap((group) => group.tags)),
+])
+const visibleGroupChats = computed(() =>
+  groupChats.value.filter(
+    (group) => selectedInterest.value === '全部' || group.tags.includes(selectedInterest.value),
+  ),
+)
+const joinedGroupChats = computed(() => groupChats.value.filter((group) => group.joined))
 
 async function loadHome() {
   isLoading.value = true
@@ -68,8 +97,53 @@ async function loadHome() {
   }
 }
 
+async function loadGroupChats() {
+  groupLoadError.value = ''
+  try {
+    const response = await fetch('/api/group-chats')
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { groupChats?: GroupChat[] }
+    }
+
+    if (!response.ok || result.code !== 0 || !result.data?.groupChats) {
+      throw new Error(result.message || result.msg || '加载群聊失败')
+    }
+
+    groupChats.value = result.data.groupChats
+  } catch (error) {
+    groupLoadError.value = error instanceof Error ? error.message : '加载群聊失败，请稍后重试'
+  }
+}
+
 const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
+
+async function joinGroupChat(group: GroupChat) {
+  if (group.joined) return
+  joiningGroupId.value = group.id
+  groupJoinError.value = ''
+  try {
+    const response = await fetch(`/api/group-chats/${group.id}/join`, { method: 'POST' })
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { groupChat?: GroupChat }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.groupChat) {
+      throw new Error(result.message || result.msg || '加入群聊失败')
+    }
+    const index = groupChats.value.findIndex((item) => item.id === group.id)
+    if (index !== -1) groupChats.value[index] = result.data.groupChat
+  } catch (error) {
+    groupJoinError.value = error instanceof Error ? error.message : '加入群聊失败，请稍后重试'
+  } finally {
+    joiningGroupId.value = ''
+  }
+}
 
 async function sendFriendRequest() {
   if (!friendRequestName.value.trim()) return
@@ -95,6 +169,7 @@ async function sendFriendRequest() {
 }
 
 loadHome()
+loadGroupChats()
 </script>
 
 <template>
@@ -119,9 +194,34 @@ loadHome()
     <aside class="dm-sidebar">
       <button class="sidebar-search">查找或开始新的对话 <span>⌘ K</span></button>
       <div class="sidebar-nav">
-        <button class="sidebar-link active"><span class="nav-glyph">◉</span> 好友</button>
+        <button
+          class="sidebar-link"
+          :class="{ active: activeView === 'friends' }"
+          @click="activeView = 'friends'"
+        >
+          <span class="nav-glyph">◉</span> 好友
+        </button>
+        <button
+          class="sidebar-link"
+          :class="{ active: activeView === 'groups' }"
+          @click="activeView = 'groups'"
+        >
+          <span class="nav-glyph">▦</span> 群聊
+        </button>
         <button class="sidebar-link"><span class="nav-glyph">◌</span> Nitro</button>
         <button class="sidebar-link"><span class="nav-glyph">✉</span> 消息请求</button>
+      </div>
+      <div v-if="joinedGroupChats.length" class="joined-groups">
+        <div class="dm-heading"><span>已加入的群聊</span></div>
+        <button
+          v-for="group in joinedGroupChats"
+          :key="group.id"
+          class="dm-item joined-group"
+          @click="activeView = 'groups'"
+        >
+          <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
+          <span>{{ group.name }}</span>
+        </button>
       </div>
       <div class="dm-heading">
         <span>私信</span>
@@ -155,9 +255,22 @@ loadHome()
 
     <section class="friends-page">
       <header class="topbar">
-        <div class="topbar-title"><span>◉</span> 好友</div>
+        <div class="topbar-title"><span>{{ activeView === 'friends' ? '◉' : '▦' }}</span> {{ activeView === 'friends' ? '好友' : '群聊' }}</div>
         <div class="topbar-divider"></div>
-        <button class="topbar-action active">好友</button>
+        <button
+          class="topbar-action view-switch"
+          :class="{ active: activeView === 'friends' }"
+          @click="activeView = 'friends'"
+        >
+          好友
+        </button>
+        <button
+          class="topbar-action view-switch"
+          :class="{ active: activeView === 'groups' }"
+          @click="activeView = 'groups'"
+        >
+          群聊
+        </button>
         <button class="topbar-action">商店</button>
         <button class="topbar-action">探索</button>
         <div class="topbar-spacer"></div>
@@ -165,7 +278,7 @@ loadHome()
         <button class="topbar-icon help-icon" aria-label="帮助" title="帮助">?</button>
       </header>
 
-      <div class="friends-layout">
+      <div v-if="activeView === 'friends'" class="friends-layout">
         <section class="friends-main">
           <div class="friends-toolbar">
             <div class="friend-tabs" role="tablist" aria-label="好友筛选">
@@ -263,6 +376,77 @@ loadHome()
           <div class="activity-note">
             <span>✦</span>
             <p>当朋友开始游戏或分享动态时，你会在这里看到他们。</p>
+          </div>
+        </aside>
+      </div>
+
+      <div v-else class="groups-layout">
+        <section class="groups-main">
+          <div class="groups-heading">
+            <div>
+              <h1>找到你的兴趣群聊</h1>
+              <p>按兴趣标签浏览，点击即可直接加入，无需申请。</p>
+            </div>
+          </div>
+          <div class="interest-filters" role="group" aria-label="按兴趣标签筛选群聊">
+            <button
+              v-for="tag in interestTags"
+              :key="tag"
+              :aria-pressed="selectedInterest === tag"
+              :class="{ selected: selectedInterest === tag }"
+              @click="selectedInterest = tag"
+            >
+              {{ tag === '全部' ? '全部兴趣' : `# ${tag}` }}
+            </button>
+          </div>
+          <div v-if="groupLoadError" class="group-empty-state" role="alert">
+            <strong>{{ groupLoadError }}</strong>
+            <button class="retry-button" @click="loadGroupChats">重试</button>
+          </div>
+          <div v-else-if="visibleGroupChats.length" class="group-card-grid">
+            <article v-for="group in visibleGroupChats" :key="group.id" class="group-card">
+              <div class="group-card-banner" :style="{ '--group-color': group.color }">
+                <span class="group-card-icon">{{ group.icon }}</span>
+                <span class="group-online">{{ group.onlineCount }} 人在线</span>
+              </div>
+              <div class="group-card-content">
+                <h2>{{ group.name }}</h2>
+                <p class="group-description">{{ group.description }}</p>
+                <div class="group-tags" aria-label="兴趣标签">
+                  <span v-for="tag in group.tags" :key="tag"># {{ tag }}</span>
+                </div>
+                <div class="group-card-footer">
+                  <span>{{ group.memberCount }} 位成员</span>
+                  <button
+                    :class="{ joined: group.joined }"
+                    :disabled="group.joined || joiningGroupId === group.id"
+                    @click="joinGroupChat(group)"
+                  >
+                    {{
+                      group.joined
+                        ? '已加入'
+                        : joiningGroupId === group.id
+                          ? '正在加入…'
+                          : '直接加入'
+                    }}
+                  </button>
+                </div>
+              </div>
+            </article>
+          </div>
+          <div v-else class="group-empty-state">
+            <strong>这个兴趣标签下暂时还没有群聊</strong>
+            <p>试试其他兴趣标签。</p>
+          </div>
+          <p v-if="groupJoinError" class="group-error" role="alert">{{ groupJoinError }}</p>
+        </section>
+        <aside class="group-guide">
+          <span class="group-guide-icon">✦</span>
+          <h2>加入感兴趣的群聊</h2>
+          <p>选择兴趣标签发现同好。加入后，群聊会出现在左侧列表中，你可以随时回来继续探索。</p>
+          <div class="group-guide-count">
+            <strong>{{ joinedGroupChats.length }}</strong>
+            <span>已加入群聊</span>
           </div>
         </aside>
       </div>
@@ -1024,8 +1208,279 @@ button {
   line-height: 1.6;
 }
 
+.joined-groups {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.joined-group {
+  height: 38px;
+  font-size: 12px;
+}
+
+.group-mini-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--group-color);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.groups-layout {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.groups-main {
+  min-width: 0;
+  flex: 1;
+  padding: 28px 30px;
+}
+
+.groups-heading h1 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.groups-heading p {
+  margin: 8px 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.interest-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.interest-filters button,
+.group-tags span {
+  padding: 7px 11px;
+  border: 1px solid #45474e;
+  border-radius: 18px;
+  background: #383a40;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.interest-filters button:hover {
+  background: #404249;
+  color: var(--text);
+}
+
+.interest-filters button.selected {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.group-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 16px;
+}
+
+.group-card {
+  overflow: hidden;
+  border: 1px solid #41434a;
+  border-radius: 10px;
+  background: #2b2d31;
+  transition: border-color 150ms ease, transform 150ms ease;
+}
+
+.group-card:hover {
+  transform: translateY(-2px);
+  border-color: #60636c;
+}
+
+.group-card-banner {
+  display: flex;
+  height: 105px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 15px;
+  background:
+    radial-gradient(circle at 85% 20%, rgb(255 255 255 / 19%), transparent 30%),
+    linear-gradient(135deg, var(--group-color), #292a30);
+}
+
+.group-card-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 2px solid rgb(255 255 255 / 24%);
+  border-radius: 15px;
+  background: rgb(25 26 30 / 40%);
+  color: white;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.group-online {
+  padding: 5px 8px;
+  border-radius: 12px;
+  background: rgb(25 26 30 / 50%);
+  color: white;
+  font-size: 10px;
+}
+
+.group-card-content {
+  padding: 15px;
+}
+
+.group-card-content h2 {
+  overflow: hidden;
+  margin: 0 0 8px;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-description {
+  min-height: 38px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.group-tags {
+  display: flex;
+  min-height: 28px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.group-tags span {
+  padding: 4px 8px;
+  border: 0;
+  background: #383a40;
+  font-size: 10px;
+}
+
+.group-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 15px;
+  padding-top: 12px;
+  border-top: 1px solid #41434a;
+}
+
+.group-card-footer > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.group-card-footer button {
+  min-width: 88px;
+  height: 31px;
+  padding: 0 10px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.group-card-footer button:hover:not(:disabled) {
+  background: #4752c4;
+}
+
+.group-card-footer button:disabled {
+  cursor: default;
+}
+
+.group-card-footer button.joined {
+  background: #3b3d43;
+  color: #b5bac1;
+}
+
+.group-guide {
+  width: 270px;
+  flex: 0 0 270px;
+  padding: 35px 22px;
+  border-left: 1px solid #28292e;
+}
+
+.group-guide-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 14px;
+  background: #4a3e70;
+  color: #dfc7ff;
+  font-size: 22px;
+}
+
+.group-guide h2 {
+  margin: 18px 0 9px;
+  font-size: 16px;
+}
+
+.group-guide p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.group-guide-count {
+  display: grid;
+  gap: 4px;
+  margin-top: 24px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #2b2d31;
+}
+
+.group-guide-count strong {
+  font-size: 20px;
+}
+
+.group-guide-count span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.group-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 50px 15px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.group-empty-state p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.group-error {
+  color: #f2a6a6;
+  font-size: 12px;
+}
+
 @media (max-width: 1100px) {
   .activity-panel {
+    display: none;
+  }
+
+  .group-guide {
     display: none;
   }
 }
@@ -1037,6 +1492,14 @@ button {
 
   .friends-main {
     padding: 18px 16px;
+  }
+
+  .groups-main {
+    padding: 20px 16px;
+  }
+
+  .group-card-grid {
+    grid-template-columns: 1fr;
   }
 
   .friends-toolbar {
@@ -1100,7 +1563,7 @@ button {
   }
 
   .topbar-divider,
-  .topbar-action:not(.active) {
+  .topbar-action:not(.view-switch):not(.active) {
     display: none;
   }
 }
