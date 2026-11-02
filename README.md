@@ -2,6 +2,10 @@
 
 This template should help get you started developing with Vue 3 in Vite.
 
+The app includes a login/register screen and a Discord-inspired friends home page.
+After a successful login, the app navigates to `/home`. When mock authentication is
+enabled with `VITE_USE_MOCK=true`, use `admin` / `123456` to sign in.
+
 ## Recommended IDE Setup
 
 [VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).

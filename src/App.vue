@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import HomeView from './HomeView.vue'
 
 type AuthMode = 'login' | 'register'
 type AuthResponse = {
   message?: string
+  msg?: string
+  code?: number
+  data?: {
+    token?: string
+  }
 }
 
 const mode = ref<AuthMode>('login')
+const currentPath = ref(window.location.pathname)
+const signedInUsername = ref(localStorage.getItem('singtom-username') || '')
 const username = ref('')
 const password = ref('')
 const isLoading = ref(false)
@@ -14,7 +22,25 @@ const feedback = ref('')
 const feedbackType = ref<'success' | 'error'>('success')
 
 const isLogin = computed(() => mode.value === 'login')
+const isHome = computed(() => currentPath.value === '/home')
 const submitLabel = computed(() => (isLogin.value ? '登录' : '注册'))
+
+function updateRoute() {
+  currentPath.value = window.location.pathname
+}
+
+function navigateTo(path: string) {
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, '', path)
+  }
+  updateRoute()
+}
+
+function logout() {
+  localStorage.removeItem('singtom-username')
+  signedInUsername.value = ''
+  navigateTo('/')
+}
 
 function switchMode(nextMode: AuthMode) {
   mode.value = nextMode
@@ -71,12 +97,19 @@ async function submitForm() {
       }
     }
 
-    if (!response.ok) {
-      throw new Error(result.message || `${submitLabel.value}失败，请检查信息后重试`)
+    if (!response.ok || (result.code !== undefined && result.code !== 0)) {
+      throw new Error(result.message || result.msg || `${submitLabel.value}失败，请检查信息后重试`)
+    }
+
+    if (isLogin.value) {
+      signedInUsername.value = username.value.trim()
+      localStorage.setItem('singtom-username', signedInUsername.value)
+      navigateTo('/home')
+      return
     }
 
     feedbackType.value = 'success'
-    feedback.value = result.message || `${submitLabel.value}成功`
+    feedback.value = result.message || result.msg || `${submitLabel.value}成功`
   } catch (error) {
     feedbackType.value = 'error'
     feedback.value =
@@ -85,10 +118,14 @@ async function submitForm() {
     isLoading.value = false
   }
 }
+
+onMounted(() => window.addEventListener('popstate', updateRoute))
+onUnmounted(() => window.removeEventListener('popstate', updateRoute))
 </script>
 
 <template>
-  <main class="page">
+  <HomeView v-if="isHome" :username="signedInUsername" @logout="logout" />
+  <main v-else class="auth-page">
     <section class="auth-card" aria-labelledby="page-title">
       <div class="brand-mark" aria-hidden="true">N</div>
       <p class="eyebrow">NOW & FUTURE</p>
@@ -196,7 +233,7 @@ input {
   font: inherit;
 }
 
-.page {
+.auth-page {
   display: grid;
   min-height: 100vh;
   place-items: center;
@@ -236,7 +273,7 @@ input {
   letter-spacing: 0.18em;
 }
 
-h1 {
+.auth-page h1 {
   margin: 0;
   font-size: 29px;
   letter-spacing: -0.04em;
@@ -276,19 +313,19 @@ h1 {
   box-shadow: 0 2px 8px rgb(35 63 53 / 9%);
 }
 
-form {
+.auth-page form {
   display: flex;
   flex-direction: column;
 }
 
-label {
+.auth-page label {
   margin: 0 0 8px;
   color: #394a42;
   font-size: 13px;
   font-weight: 600;
 }
 
-input {
+.auth-page input {
   width: 100%;
   height: 48px;
   margin-bottom: 19px;
@@ -302,11 +339,11 @@ input {
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
-input::placeholder {
+.auth-page input::placeholder {
   color: #a7b0a9;
 }
 
-input:focus {
+.auth-page input:focus {
   border-color: #638571;
   box-shadow: 0 0 0 3px rgb(99 133 113 / 13%);
 }
@@ -372,7 +409,7 @@ input:focus {
     padding: 34px 26px 26px;
   }
 
-  h1 {
+  .auth-page h1 {
     font-size: 26px;
   }
 }
