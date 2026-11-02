@@ -10,6 +10,7 @@ const emit = defineEmits<{
 }>()
 
 type Friend = {
+  id: string
   name: string
   initials: string
   status: string
@@ -32,7 +33,36 @@ type GroupChat = {
   joined: boolean
 }
 
-const activeView = ref<'friends' | 'groups'>('friends')
+type ChatMessage = {
+  id: string
+  senderId: string
+  senderName: string
+  avatar: string
+  color: string
+  content: string
+  replyTo?: {
+    senderId: string
+    content: string
+  }
+}
+
+type ChatTarget = {
+  type: 'friend' | 'group'
+  id: string
+  name: string
+  avatar: string
+  color: string
+}
+
+const activeView = ref<'friends' | 'groups' | 'chat'>('friends')
+const chatReturnView = ref<'friends' | 'groups'>('friends')
+const activeChat = ref<ChatTarget | null>(null)
+const chatMessages = ref<ChatMessage[]>([])
+const chatDraft = ref('')
+const replyTarget = ref<ChatMessage | null>(null)
+const isLoadingMessages = ref(false)
+const isSendingMessage = ref(false)
+const chatError = ref('')
 const activeTab = ref('在线')
 const searchQuery = ref('')
 const friendRequestName = ref('')
@@ -120,6 +150,91 @@ async function loadGroupChats() {
 
 const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
+const currentUserId = computed(() => `${displayName.value.toLowerCase()}#0001`)
+
+async function openChat(target: ChatTarget) {
+  if (activeView.value !== 'chat') {
+    chatReturnView.value = activeView.value
+  }
+  activeChat.value = target
+  activeView.value = 'chat'
+  chatMessages.value = []
+  chatError.value = ''
+  replyTarget.value = null
+  isLoadingMessages.value = true
+  try {
+    const response = await fetch(`/api/chats/${target.type}/${target.id}/messages`)
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { messages?: ChatMessage[] }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.messages) {
+      throw new Error(result.message || result.msg || '加载聊天记录失败')
+    }
+    chatMessages.value = result.data.messages
+  } catch (error) {
+    chatError.value = error instanceof Error ? error.message : '加载聊天记录失败，请稍后重试'
+  } finally {
+    isLoadingMessages.value = false
+  }
+}
+
+function closeChat() {
+  activeView.value = chatReturnView.value
+  activeChat.value = null
+  chatMessages.value = []
+  chatDraft.value = ''
+  replyTarget.value = null
+  chatError.value = ''
+}
+
+async function sendChatMessage() {
+  const content = chatDraft.value.trim()
+  const target = activeChat.value
+  if (!content || !target || isSendingMessage.value) return
+
+  isSendingMessage.value = true
+  chatError.value = ''
+  try {
+    const response = await fetch(`/api/chats/${target.type}/${target.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        senderId: currentUserId.value,
+        senderName: displayName.value,
+        avatar: initials.value,
+        color: '#5865f2',
+        content,
+        ...(replyTarget.value
+          ? {
+              replyTo: {
+                senderId: replyTarget.value.senderId,
+                content: replyTarget.value.content,
+              },
+            }
+          : {}),
+      }),
+    })
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { message?: ChatMessage }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.message) {
+      throw new Error(result.message || result.msg || '发送消息失败')
+    }
+    chatMessages.value.push(result.data.message)
+    chatDraft.value = ''
+    replyTarget.value = null
+  } catch (error) {
+    chatError.value = error instanceof Error ? error.message : '发送消息失败，请稍后重试'
+  } finally {
+    isSendingMessage.value = false
+  }
+}
 
 async function joinGroupChat(group: GroupChat) {
   if (group.joined) return
@@ -217,7 +332,7 @@ loadGroupChats()
           v-for="group in joinedGroupChats"
           :key="group.id"
           class="dm-item joined-group"
-          @click="activeView = 'groups'"
+          @click="openChat({ type: 'group', id: group.id, name: group.name, avatar: group.icon, color: group.color })"
         >
           <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
           <span>{{ group.name }}</span>
@@ -228,7 +343,12 @@ loadGroupChats()
         <button aria-label="新建私信" title="新建私信">＋</button>
       </div>
       <div class="dm-list">
-        <button v-for="friend in friends.slice(0, 3)" :key="friend.name" class="dm-item">
+        <button
+          v-for="friend in friends.slice(0, 3)"
+          :key="friend.id"
+          class="dm-item"
+          @click="openChat({ type: 'friend', id: friend.id, name: friend.name, avatar: friend.initials, color: friend.color })"
+        >
           <span class="avatar small-avatar" :style="{ '--avatar-color': friend.color }">
             {{ friend.initials }}
             <i :class="{ online: friend.online }"></i>
@@ -255,9 +375,14 @@ loadGroupChats()
 
     <section class="friends-page">
       <header class="topbar">
-        <div class="topbar-title"><span>{{ activeView === 'friends' ? '◉' : '▦' }}</span> {{ activeView === 'friends' ? '好友' : '群聊' }}</div>
-        <div class="topbar-divider"></div>
+        <button v-if="activeView === 'chat'" class="chat-back" aria-label="返回" @click="closeChat">‹</button>
+        <div class="topbar-title">
+          <span>{{ activeView === 'friends' ? '◉' : activeView === 'groups' ? '▦' : activeChat?.avatar }}</span>
+          {{ activeView === 'friends' ? '好友' : activeView === 'groups' ? '群聊' : activeChat?.name }}
+        </div>
+        <div v-if="activeView !== 'chat'" class="topbar-divider"></div>
         <button
+          v-if="activeView !== 'chat'"
           class="topbar-action view-switch"
           :class="{ active: activeView === 'friends' }"
           @click="activeView = 'friends'"
@@ -265,17 +390,18 @@ loadGroupChats()
           好友
         </button>
         <button
+          v-if="activeView !== 'chat'"
           class="topbar-action view-switch"
           :class="{ active: activeView === 'groups' }"
           @click="activeView = 'groups'"
         >
           群聊
         </button>
-        <button class="topbar-action">商店</button>
-        <button class="topbar-action">探索</button>
+        <button v-if="activeView !== 'chat'" class="topbar-action">商店</button>
+        <button v-if="activeView !== 'chat'" class="topbar-action">探索</button>
         <div class="topbar-spacer"></div>
-        <button class="topbar-icon" aria-label="收件箱" title="收件箱">▤</button>
-        <button class="topbar-icon help-icon" aria-label="帮助" title="帮助">?</button>
+        <button v-if="activeView !== 'chat'" class="topbar-icon" aria-label="收件箱" title="收件箱">▤</button>
+        <button v-if="activeView !== 'chat'" class="topbar-icon help-icon" aria-label="帮助" title="帮助">?</button>
       </header>
 
       <div v-if="activeView === 'friends'" class="friends-layout">
@@ -340,7 +466,13 @@ loadGroupChats()
                 </div>
                 <div class="friend-activity">{{ friend.activity }}</div>
                 <div class="friend-actions">
-                  <button :aria-label="`给 ${friend.name} 发消息`" title="发消息">▰</button>
+                  <button
+                    :aria-label="`给 ${friend.name} 发消息`"
+                    title="发消息"
+                    @click="openChat({ type: 'friend', id: friend.id, name: friend.name, avatar: friend.initials, color: friend.color })"
+                  >
+                    ▰
+                  </button>
                   <button :aria-label="`更多关于 ${friend.name} 的操作`" title="更多">•••</button>
                 </div>
               </article>
@@ -380,7 +512,7 @@ loadGroupChats()
         </aside>
       </div>
 
-      <div v-else class="groups-layout">
+      <div v-else-if="activeView === 'groups'" class="groups-layout">
         <section class="groups-main">
           <div class="groups-heading">
             <div>
@@ -419,12 +551,14 @@ loadGroupChats()
                   <span>{{ group.memberCount }} 位成员</span>
                   <button
                     :class="{ joined: group.joined }"
-                    :disabled="group.joined || joiningGroupId === group.id"
-                    @click="joinGroupChat(group)"
+                    :disabled="joiningGroupId === group.id"
+                    @click="group.joined
+                      ? openChat({ type: 'group', id: group.id, name: group.name, avatar: group.icon, color: group.color })
+                      : joinGroupChat(group)"
                   >
                     {{
                       group.joined
-                        ? '已加入'
+                        ? '进入聊天'
                         : joiningGroupId === group.id
                           ? '正在加入…'
                           : '直接加入'
@@ -450,6 +584,75 @@ loadGroupChats()
           </div>
         </aside>
       </div>
+
+      <section v-else class="chat-view" aria-label="聊天">
+        <div class="chat-context">
+          <span>{{ activeChat?.type === 'group' ? '群聊' : '好友' }}</span>
+          <strong>{{ activeChat?.name }}</strong>
+        </div>
+        <div v-if="isLoadingMessages" class="chat-state" role="status">正在加载聊天记录…</div>
+        <div v-else-if="chatError && !chatMessages.length" class="chat-state" role="alert">
+          <strong>{{ chatError }}</strong>
+          <button class="retry-button" @click="activeChat && openChat(activeChat)">重试</button>
+        </div>
+        <div v-else class="chat-messages" role="log" aria-label="聊天消息">
+          <div v-if="!chatMessages.length" class="chat-state">还没有消息，发送第一条消息吧。</div>
+          <article
+            v-for="message in chatMessages"
+            :key="message.id"
+            class="chat-message"
+            :class="{ 'own-message': message.senderId === currentUserId }"
+          >
+            <template v-if="message.senderId === currentUserId">
+              <div class="chat-message-body">
+                <div v-if="message.replyTo" class="message-reply-context">
+                  回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
+                </div>
+                <p>{{ message.content }}</p>
+              </div>
+            </template>
+            <template v-else>
+              <span class="avatar chat-avatar" :style="{ '--avatar-color': message.color }">
+                {{ message.avatar }}
+              </span>
+              <div class="chat-message-body">
+                <strong class="chat-sender-id">{{ message.senderId }}</strong>
+                <div v-if="message.replyTo" class="message-reply-context">
+                  回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
+                </div>
+                <button
+                  class="chat-reply-trigger"
+                  :aria-label="`回复 ${message.senderId}：${message.content}`"
+                  @click="replyTarget = message"
+                >
+                  <p>{{ message.content }}</p>
+                </button>
+              </div>
+            </template>
+          </article>
+        </div>
+        <p v-if="chatError && chatMessages.length" class="chat-error" role="alert">{{ chatError }}</p>
+        <div v-if="replyTarget" class="reply-preview">
+          <div class="reply-preview-copy">
+            <strong>回复 {{ replyTarget.senderId }}</strong>
+            <span>{{ replyTarget.content }}</span>
+          </div>
+          <button type="button" aria-label="取消回复" @click="replyTarget = null">×</button>
+        </div>
+        <form class="chat-composer" @submit.prevent="sendChatMessage">
+          <input
+            v-model="chatDraft"
+            type="text"
+            aria-label="输入文字消息"
+            placeholder="发送文字消息…"
+            autocomplete="off"
+            maxlength="2000"
+          />
+          <button type="submit" :disabled="!chatDraft.trim() || isSendingMessage">
+            {{ isSendingMessage ? '发送中…' : '发送' }}
+          </button>
+        </form>
+      </section>
     </section>
   </main>
 </template>
@@ -1475,6 +1678,256 @@ button {
   font-size: 12px;
 }
 
+.chat-back {
+  display: grid;
+  width: 30px;
+  height: 32px;
+  place-items: center;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.chat-back:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.chat-view {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding: 0 24px 20px;
+}
+
+.chat-context {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid #41434a;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-context strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.chat-messages {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 18px;
+  overflow-y: auto;
+  padding: 22px 4px;
+}
+
+.chat-message {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.chat-message.own-message {
+  justify-content: flex-end;
+}
+
+.chat-message.own-message .chat-message-body {
+  display: flex;
+  max-width: min(72%, 680px);
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.chat-message.own-message .chat-message-body > p {
+  padding: 10px 13px;
+  border-radius: 16px 16px 4px 16px;
+  background: #5865f2;
+  color: white;
+}
+
+.chat-avatar {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  font-size: 13px;
+}
+
+.chat-message-body {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.chat-message:not(.own-message) .chat-message-body {
+  max-width: min(78%, 720px);
+}
+
+.chat-sender-id {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.chat-message-body p {
+  margin: 5px 0 0;
+  color: #dbdee1;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-reply-trigger {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+.chat-reply-trigger:hover p {
+  color: white;
+  text-decoration: underline;
+  text-decoration-color: #949ba4;
+  text-underline-offset: 3px;
+}
+
+.chat-reply-trigger:focus-visible {
+  outline: 2px solid #8e98ff;
+  outline-offset: 3px;
+}
+
+.message-reply-context {
+  overflow: hidden;
+  max-width: 100%;
+  margin: 0 0 5px;
+  padding: 5px 8px;
+  border-left: 2px solid #949ba4;
+  border-radius: 0 4px 4px 0;
+  background: #292a2f;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-state {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  margin: auto;
+  padding: 28px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.chat-state strong {
+  color: #f2a6a6;
+}
+
+.chat-composer {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border-radius: 8px;
+  background: #383a40;
+}
+
+.chat-composer input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.chat-composer input::placeholder {
+  color: var(--subtle);
+}
+
+.chat-composer button {
+  min-width: 54px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chat-composer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.chat-error {
+  margin: 0 0 8px;
+  color: #f2a6a6;
+  font-size: 12px;
+}
+
+.reply-preview {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 12px;
+  border-left: 3px solid #8e98ff;
+  border-radius: 6px 6px 0 0;
+  background: #292a2f;
+}
+
+.reply-preview-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.reply-preview-copy strong {
+  color: #c9cdfb;
+  font-size: 11px;
+}
+
+.reply-preview-copy span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-preview > button {
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+}
+
+.reply-preview > button:hover {
+  background: #404249;
+  color: var(--text);
+}
+
 @media (max-width: 1100px) {
   .activity-panel {
     display: none;
@@ -1496,6 +1949,10 @@ button {
 
   .groups-main {
     padding: 20px 16px;
+  }
+
+  .chat-view {
+    padding: 0 14px 14px;
   }
 
   .group-card-grid {

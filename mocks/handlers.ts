@@ -58,6 +58,127 @@ const mockGroupChats = [
   },
 ]
 
+type MockChatMessage = {
+  id: string
+  senderId: string
+  senderName: string
+  avatar: string
+  color: string
+  content: string
+  replyTo?: {
+    senderId: string
+    content: string
+  }
+}
+
+const mockChatMessages: Record<string, MockChatMessage[]> = {
+  'friend:luna': [
+    {
+      id: 'luna-1',
+      senderId: 'luna#1024',
+      senderName: 'Luna',
+      avatar: 'L',
+      color: '#b67bea',
+      content: '最近在循环听这张专辑，你听过吗？',
+    },
+    {
+      id: 'luna-2',
+      senderId: 'admin#0001',
+      senderName: 'admin',
+      avatar: 'A',
+      color: '#5865f2',
+      content: '还没有，晚点去听听！',
+    },
+  ],
+  'friend:mika': [
+    {
+      id: 'mika-1',
+      senderId: 'mika#2048',
+      senderName: 'Mika',
+      avatar: 'M',
+      color: '#58a6a0',
+      content: '今晚有空一起开一局吗？',
+    },
+  ],
+  'friend:kai': [
+    {
+      id: 'kai-1',
+      senderId: 'kai#3100',
+      senderName: 'Kai',
+      avatar: 'K',
+      color: '#e49b62',
+      content: '我整理了一份周末活动清单，发你看看。',
+    },
+  ],
+  'friend:sora': [
+    {
+      id: 'sora-1',
+      senderId: 'sora#4096',
+      senderName: 'Sora',
+      avatar: 'S',
+      color: '#6f8de8',
+      content: '嗨，最近怎么样？',
+    },
+  ],
+  'group:indie-music': [
+    {
+      id: 'indie-1',
+      senderId: 'luna#1024',
+      senderName: 'Luna',
+      avatar: 'L',
+      color: '#b67bea',
+      content: '欢迎新朋友！最近有什么推荐的现场演出吗？',
+    },
+  ],
+  'group:cozy-gamers': [
+    {
+      id: 'game-1',
+      senderId: 'mika#2048',
+      senderName: 'Mika',
+      avatar: 'M',
+      color: '#58a6a0',
+      content: '周末准备开 Minecraft 新档，有人一起吗？',
+    },
+  ],
+  'group:book-nook': [
+    {
+      id: 'book-1',
+      senderId: 'sora#4096',
+      senderName: 'Sora',
+      avatar: 'S',
+      color: '#6f8de8',
+      content: '最近读完了《小王子》，又有了新的感受。',
+    },
+  ],
+  'group:creative-corner': [
+    {
+      id: 'creative-1',
+      senderId: 'kai#3100',
+      senderName: 'Kai',
+      avatar: 'K',
+      color: '#e49b62',
+      content: '分享一个最近在尝试的配色灵感。',
+    },
+  ],
+  'group:dev-lounge': [
+    {
+      id: 'dev-1',
+      senderId: 'mika#2048',
+      senderName: 'Mika',
+      avatar: 'M',
+      color: '#58a6a0',
+      content: '大家最近都在用什么前端工具？',
+    },
+  ],
+}
+
+const mockFriends = [
+  { id: 'luna', name: 'Luna', initials: 'L', color: '#b67bea' },
+  { id: 'mika', name: 'Mika', initials: 'M', color: '#58a6a0' },
+  { id: 'kai', name: 'Kai', initials: 'K', color: '#e49b62' },
+  { id: 'sora', name: 'Sora', initials: 'S', color: '#6f8de8' },
+]
+
 export const handlers = [
   http.post('/api/auth/login', async ({ request }) => {
     const { username, password } = await request.json() as { username: string; password: string }
@@ -74,6 +195,7 @@ export const handlers = [
       data: {
         friends: [
           {
+            id: 'luna',
             name: 'Luna',
             initials: 'L',
             status: '正在听音乐',
@@ -84,6 +206,7 @@ export const handlers = [
             online: true,
           },
           {
+            id: 'mika',
             name: 'Mika',
             initials: 'M',
             status: '正在玩 Minecraft',
@@ -94,6 +217,7 @@ export const handlers = [
             online: true,
           },
           {
+            id: 'kai',
             name: 'Kai',
             initials: 'K',
             status: '暂时离开',
@@ -104,6 +228,7 @@ export const handlers = [
             online: false,
           },
           {
+            id: 'sora',
             name: 'Sora',
             initials: 'S',
             status: '在线',
@@ -143,5 +268,47 @@ export const handlers = [
     }
 
     return HttpResponse.json({ code: 0, message: '已直接加入群聊', data: { groupChat } })
+  }),
+  http.get('/api/chats/:type/:id/messages', async ({ params }) => {
+    await delay(200)
+    const type = String(params.type)
+    const id = String(params.id)
+    const isKnownChat =
+      (type === 'friend' && mockFriends.some((friend) => friend.id === id)) ||
+      (type === 'group' && mockGroupChats.some((group) => group.id === id && group.joined))
+    if (!isKnownChat) {
+      return HttpResponse.json({ code: 1004, msg: '找不到这个聊天' }, { status: 404 })
+    }
+
+    return HttpResponse.json({
+      code: 0,
+      data: { messages: mockChatMessages[`${type}:${id}`] || [] },
+    })
+  }),
+  http.post('/api/chats/:type/:id/messages', async ({ params, request }) => {
+    const type = String(params.type)
+    const id = String(params.id)
+    const isKnownChat =
+      (type === 'friend' && mockFriends.some((friend) => friend.id === id)) ||
+      (type === 'group' && mockGroupChats.some((group) => group.id === id && group.joined))
+    if (!isKnownChat) {
+      return HttpResponse.json({ code: 1004, msg: '找不到这个聊天' }, { status: 404 })
+    }
+
+    const body = await request.json() as Omit<MockChatMessage, 'id'>
+    if (!body.content?.trim()) {
+      return HttpResponse.json({ code: 1002, msg: '消息内容不能为空' }, { status: 400 })
+    }
+
+    const message: MockChatMessage = {
+      ...body,
+      id: `${type}-${id}-${Date.now()}`,
+      content: body.content.trim(),
+    }
+    const chatKey = `${type}:${id}`
+    mockChatMessages[chatKey] ??= []
+    mockChatMessages[chatKey].push(message)
+
+    return HttpResponse.json({ code: 0, data: { message } })
   }),
 ]
