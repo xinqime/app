@@ -11,6 +11,12 @@ mock data, direct-join responses, and joined-group conversations are served by
 the shared MSW handlers. Joined-group chats include a "See you tomorrow" tool
 for recording that the current user plans to stay in the group tomorrow; the
 preference is served by the shared MSW handlers.
+In mock mode, a WebSocket supplies demo group messages. The client refreshes
+the full group list on connection/reconnection and every 60 seconds; unread
+groups are sorted before read groups, with the most recently active groups first.
+The mock emits demo messages every 20 seconds. Read receipts identify the latest
+displayed message, and unread counts are calculated per user and group from the
+monotonically advancing read cursor.
 
 ## Recommended IDE Setup
 

@@ -1,4 +1,4 @@
-import { http, HttpResponse, delay } from 'msw'
+import { http, HttpResponse, delay, ws } from 'msw'
 
 const mockGroupChats = [
   {
@@ -59,6 +59,35 @@ const mockGroupChats = [
 ]
 
 const mockStayTomorrowPreferences = new Set<string>()
+const mockGroupReadCursors = new Map<string, number>()
+const mockGroupChatSocket = ws.link('/api/group-chats/ws')
+const mockSocketClients = new Set<{ userId: string; send: (data: string) => void }>()
+let mockMessageTimer: ReturnType<typeof setInterval> | undefined
+let mockMessageSequence = 0
+
+function getGroupReadCursorKey(userId: string, groupId: string) {
+  return `${userId}:${groupId}`
+}
+
+function getGroupUnreadCount(userId: string, groupId: string) {
+  const messages = mockChatMessages[`group:${groupId}`] || []
+  const readCursor = mockGroupReadCursors.get(getGroupReadCursorKey(userId, groupId)) || 0
+  return messages
+    .slice(readCursor)
+    .filter((message) => message.senderId !== userId).length
+}
+
+function broadcastGroupMessage(groupId: string, message: MockChatMessage) {
+  for (const client of mockSocketClients) {
+    if (client.userId === message.senderId) continue
+    client.send(JSON.stringify({
+      type: 'message',
+      groupId,
+      message,
+      unreadCount: getGroupUnreadCount(client.userId, groupId),
+    }))
+  }
+}
 
 type MockChatMessage = {
   id: string
@@ -67,6 +96,7 @@ type MockChatMessage = {
   avatar: string
   color: string
   content: string
+  createdAt?: string
   replyTo?: {
     senderId: string
     content: string
@@ -126,6 +156,110 @@ const mockChatMessages: Record<string, MockChatMessage[]> = {
   ],
 }
 
+const mockIncomingMessageTemplates = [
+  {
+    groupId: 'indie-music',
+    senderId: 'luna#1024',
+    senderName: 'Luna',
+    avatar: 'L',
+    color: '#b67bea',
+    content: '刚刚又发现一首很适合分享的歌！',
+  },
+  {
+    groupId: 'cozy-gamers',
+    senderId: 'mika#2048',
+    senderName: 'Mika',
+    avatar: 'M',
+    color: '#58a6a0',
+    content: '有人今晚想一起玩吗？',
+  },
+  {
+    groupId: 'book-nook',
+    senderId: 'sora#4096',
+    senderName: 'Sora',
+    avatar: 'S',
+    color: '#6f8de8',
+    content: '分享一段刚读到的句子。',
+  },
+  {
+    groupId: 'creative-corner',
+    senderId: 'kai#3100',
+    senderName: 'Kai',
+    avatar: 'K',
+    color: '#e49b62',
+    content: '我更新了最近的创作进度。',
+  },
+  {
+    groupId: 'dev-lounge',
+    senderId: 'mika#2048',
+    senderName: 'Mika',
+    avatar: 'M',
+    color: '#58a6a0',
+    content: '刚测试了一个新的开发工具。',
+  },
+]
+
+function emitMockGroupMessage() {
+  const joinedGroups = mockGroupChats.filter((group) => group.joined)
+  if (!joinedGroups.length || !mockSocketClients.size) return
+
+  const availableTemplates = mockIncomingMessageTemplates.filter((template) =>
+    joinedGroups.some((group) => group.id === template.groupId),
+  )
+  if (!availableTemplates.length) return
+
+  const template = availableTemplates[mockMessageSequence % availableTemplates.length]
+  if (!template) return
+  mockMessageSequence += 1
+  const groupChat = joinedGroups.find((group) => group.id === template.groupId)
+  if (!groupChat) return
+  const message: MockChatMessage = {
+    ...template,
+    id: `group-${groupChat.id}-${Date.now()}-${mockMessageSequence}`,
+    createdAt: new Date().toISOString(),
+  }
+  const chatKey = `group:${groupChat.id}`
+  mockChatMessages[chatKey] ??= []
+  mockChatMessages[chatKey].push(message)
+
+  broadcastGroupMessage(groupChat.id, message)
+}
+
+const mockGroupChatSocketHandler = mockGroupChatSocket.addEventListener('connection', ({ client }) => {
+  const userId = client.url.searchParams.get('userId')?.trim()
+  if (!userId) {
+    client.close(1008, '缺少当前用户信息')
+    return
+  }
+
+  const mockClient = {
+    userId,
+    send: (data: string) => client.send(data),
+  }
+  mockSocketClients.add(mockClient)
+  client.addEventListener('message', (event) => {
+    try {
+      const payload = JSON.parse(String(event.data)) as { type?: string }
+      if (payload.type === 'heartbeat') {
+        mockClient.send(JSON.stringify({ type: 'pong' }))
+      }
+    } catch (error) {
+      console.error('收到无效的群聊 WebSocket 请求:', error)
+    }
+  })
+  client.addEventListener('close', () => {
+    mockSocketClients.delete(mockClient)
+    if (!mockSocketClients.size && mockMessageTimer) {
+      clearInterval(mockMessageTimer)
+      mockMessageTimer = undefined
+    }
+  })
+
+  if (!mockMessageTimer) {
+    mockMessageTimer = setInterval(emitMockGroupMessage, 20000)
+  }
+})
+
 export const handlers = [
   http.post('/api/auth/login', async ({ request }) => {
     const { username, password } = await request.json() as { username: string; password: string }
@@ -135,15 +269,34 @@ export const handlers = [
     }
     return HttpResponse.json({ code: 1001, msg: '用户名或密码错误' })
   }),
-  http.get('/api/group-chats', async () => {
+  http.get('/api/group-chats', async ({ request }) => {
     await delay(300)
-    return HttpResponse.json({ code: 0, data: { groupChats: mockGroupChats } })
+    const userId = new URL(request.url).searchParams.get('userId')?.trim()
+    if (!userId) {
+      return HttpResponse.json({ code: 1002, msg: '缺少当前用户信息' }, { status: 400 })
+    }
+
+    const groupChats = mockGroupChats.map((group) => {
+      const messages = mockChatMessages[`group:${group.id}`] || []
+      return {
+        ...group,
+        newMessageCount: getGroupUnreadCount(userId, group.id),
+        lastMessageAt: messages.at(-1)?.createdAt || '',
+      }
+    })
+    return HttpResponse.json({ code: 0, data: { groupChats } })
   }),
-  http.post('/api/group-chats/:id/join', async ({ params }) => {
+  http.post('/api/group-chats/:id/join', async ({ params, request }) => {
     await delay(250)
     const groupChat = mockGroupChats.find((group) => group.id === params.id)
     if (!groupChat) {
       return HttpResponse.json({ code: 1004, msg: '找不到这个群聊' }, { status: 404 })
+    }
+
+    const body = await request.json() as { userId?: string }
+    const userId = body.userId?.trim()
+    if (!userId) {
+      return HttpResponse.json({ code: 1002, msg: '缺少当前用户信息' }, { status: 400 })
     }
 
     if (!groupChat.joined) {
@@ -152,7 +305,16 @@ export const handlers = [
       groupChat.onlineCount += 1
     }
 
-    return HttpResponse.json({ code: 0, message: '已直接加入群聊', data: { groupChat } })
+    return HttpResponse.json({
+      code: 0,
+      message: '已直接加入群聊',
+      data: {
+        groupChat: {
+          ...groupChat,
+          newMessageCount: getGroupUnreadCount(userId, groupChat.id),
+        },
+      },
+    })
   }),
   http.post('/api/group-chats/:id/leave', async ({ params, request }) => {
     await delay(250)
@@ -226,6 +388,35 @@ export const handlers = [
       data: { messages: mockChatMessages[`group:${id}`] || [] },
     })
   }),
+  http.post('/api/group-chats/:id/read', async ({ params, request }) => {
+    const id = String(params.id)
+    const groupChat = mockGroupChats.find((group) => group.id === id && group.joined)
+    if (!groupChat) {
+      return HttpResponse.json({ code: 1004, msg: '找不到已加入的群聊' }, { status: 404 })
+    }
+
+    const body = await request.json() as { userId?: string; lastReadMessageId?: string }
+    const userId = body.userId?.trim()
+    const lastReadMessageId = body.lastReadMessageId?.trim()
+    if (!userId || !lastReadMessageId) {
+      return HttpResponse.json({ code: 1002, msg: '缺少用户信息或已读消息标识' }, { status: 400 })
+    }
+
+    const messages = mockChatMessages[`group:${id}`] || []
+    const acknowledgedIndex = messages.findIndex((message) => message.id === lastReadMessageId)
+    if (acknowledgedIndex === -1) {
+      return HttpResponse.json({ code: 1004, msg: '找不到已读消息' }, { status: 404 })
+    }
+
+    const cursorKey = getGroupReadCursorKey(userId, id)
+    const currentCursor = mockGroupReadCursors.get(cursorKey) || 0
+    const readCursor = Math.max(currentCursor, acknowledgedIndex + 1)
+    mockGroupReadCursors.set(cursorKey, readCursor)
+    const newMessageCount = messages
+      .slice(readCursor)
+      .filter((message) => message.senderId !== userId).length
+    return HttpResponse.json({ code: 0, data: { newMessageCount } })
+  }),
   http.post('/api/group-chats/:id/messages', async ({ params, request }) => {
     const id = String(params.id)
     const isJoinedGroup = mockGroupChats.some((group) => group.id === id && group.joined)
@@ -242,11 +433,14 @@ export const handlers = [
       ...body,
       id: `group-${id}-${Date.now()}`,
       content: body.content.trim(),
+      createdAt: body.createdAt || new Date().toISOString(),
     }
     const chatKey = `group:${id}`
     mockChatMessages[chatKey] ??= []
     mockChatMessages[chatKey].push(message)
+    broadcastGroupMessage(id, message)
 
     return HttpResponse.json({ code: 0, data: { message } })
   }),
+  mockGroupChatSocketHandler,
 ]

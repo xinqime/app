@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps<{
   username: string
@@ -19,6 +19,8 @@ type GroupChat = {
   icon: string
   color: string
   joined: boolean
+  newMessageCount?: number
+  lastMessageAt?: string
 }
 
 type ChatMessage = {
@@ -28,6 +30,7 @@ type ChatMessage = {
   avatar: string
   color: string
   content: string
+  createdAt?: string
   replyTo?: {
     senderId: string
     content: string
@@ -64,6 +67,9 @@ const stayTomorrowError = ref('')
 const isLeavingGroup = ref(false)
 const groupLeaveError = ref('')
 const isGroupToolsOpen = ref(false)
+const isJoinedGroupsOpen = ref(true)
+const groupLocalVersions = new Map<string, number>()
+let groupListRequestVersion = 0
 
 const interestTags = computed(() => [
   '全部',
@@ -74,12 +80,26 @@ const visibleGroupChats = computed(() =>
     (group) => selectedInterest.value === '全部' || group.tags.includes(selectedInterest.value),
   ),
 )
-const joinedGroupChats = computed(() => groupChats.value.filter((group) => group.joined))
+const joinedGroupChats = computed(() =>
+  groupChats.value
+    .filter((group) => group.joined)
+    .sort((left, right) => {
+      const unreadDifference = Number((right.newMessageCount ?? 0) > 0) -
+        Number((left.newMessageCount ?? 0) > 0)
+      if (unreadDifference !== 0) return unreadDifference
+      return (Date.parse(right.lastMessageAt || '') || 0) -
+        (Date.parse(left.lastMessageAt || '') || 0)
+    }),
+)
 
-async function loadGroupChats() {
-  groupLoadError.value = ''
+async function loadGroupChats(silent = false) {
+  if (!silent) groupLoadError.value = ''
+  const requestVersion = ++groupListRequestVersion
+  const localVersionsAtRequest = new Map(groupLocalVersions)
   try {
-    const response = await fetch('/api/group-chats')
+    const response = await fetch(
+      `/api/group-chats?userId=${encodeURIComponent(currentUserId.value)}`,
+    )
     const result = await response.json() as {
       code?: number
       message?: string
@@ -91,15 +111,184 @@ async function loadGroupChats() {
       throw new Error(result.message || result.msg || '加载群聊失败')
     }
 
-    groupChats.value = result.data.groupChats
+    if (requestVersion !== groupListRequestVersion) return
+    groupChats.value = result.data.groupChats.map((group) => {
+      const currentGroup = groupChats.value.find((item) => item.id === group.id)
+      if (
+        currentGroup &&
+        groupLocalVersions.get(group.id) !== localVersionsAtRequest.get(group.id)
+      ) {
+        return {
+          ...group,
+          newMessageCount: currentGroup.newMessageCount,
+          lastMessageAt: currentGroup.lastMessageAt,
+        }
+      }
+      return group
+    })
   } catch (error) {
-    groupLoadError.value = error instanceof Error ? error.message : '加载群聊失败，请稍后重试'
+    const message = error instanceof Error ? error.message : '加载群聊失败，请稍后重试'
+    if (silent) {
+      console.error('同步群聊失败:', error)
+    } else {
+      groupLoadError.value = message
+    }
   }
 }
 
 const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
 const currentUserId = computed(() => `${displayName.value.toLowerCase()}#0001`)
+
+let groupChatSocket: WebSocket | null = null
+let socketReconnectTimer: ReturnType<typeof setTimeout> | undefined
+let groupChatHeartbeatTimer: ReturnType<typeof setInterval> | undefined
+let socketReconnectDelay = 1000
+let isGroupChatSocketDisposed = false
+
+function isIncomingGroupMessage(
+  value: unknown,
+): value is {
+  type: 'message'
+  groupId: string
+  message: ChatMessage
+  unreadCount?: number
+} {
+  if (typeof value !== 'object' || value === null) return false
+  const event = value as Record<string, unknown>
+  if (event.type !== 'message' || typeof event.groupId !== 'string') return false
+  if (typeof event.message !== 'object' || event.message === null) return false
+  const message = event.message as Record<string, unknown>
+  return (event.unreadCount === undefined || typeof event.unreadCount === 'number') &&
+    typeof message.id === 'string' &&
+    typeof message.senderId === 'string' &&
+    typeof message.senderName === 'string' &&
+    typeof message.avatar === 'string' &&
+    typeof message.color === 'string' &&
+    typeof message.content === 'string'
+}
+
+function updateGroupLocalVersion(groupId: string) {
+  const nextVersion = (groupLocalVersions.get(groupId) ?? 0) + 1
+  groupLocalVersions.set(groupId, nextVersion)
+  return nextVersion
+}
+
+function markGroupMessageRead(groupId: string, lastReadMessageId: string) {
+  const group = groupChats.value.find((item) => item.id === groupId)
+  const localVersion = updateGroupLocalVersion(groupId)
+  if (group) group.newMessageCount = 0
+
+  return fetch(`/api/group-chats/${groupId}/read`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: currentUserId.value, lastReadMessageId }),
+  }).then(async (response) => {
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { newMessageCount?: number }
+    }
+    if (
+      !response.ok ||
+      result.code !== 0 ||
+      typeof result.data?.newMessageCount !== 'number'
+    ) {
+      throw new Error(result.message || result.msg || '标记群聊已读失败')
+    }
+    if (groupLocalVersions.get(groupId) === localVersion && group) {
+      group.newMessageCount = result.data.newMessageCount
+    }
+  })
+}
+
+function handleIncomingGroupMessage(
+  groupId: string,
+  message: ChatMessage,
+  unreadCount?: number,
+) {
+  const group = groupChats.value.find((item) => item.id === groupId && item.joined)
+  if (!group) return
+
+  updateGroupLocalVersion(groupId)
+  group.lastMessageAt = message.createdAt || new Date().toISOString()
+  const isCurrentGroupOpen = activeView.value === 'chat' && activeChat.value?.id === groupId
+  if (isCurrentGroupOpen) {
+    if (!chatMessages.value.some((item) => item.id === message.id)) {
+      chatMessages.value.push(message)
+    }
+    void markGroupMessageRead(groupId, message.id).catch((error: unknown) => {
+      chatError.value = error instanceof Error ? error.message : '标记群聊已读失败'
+    })
+    return
+  }
+
+  if (typeof unreadCount === 'number') {
+    group.newMessageCount = unreadCount
+  } else if (message.senderId !== currentUserId.value) {
+    group.newMessageCount = (group.newMessageCount ?? 0) + 1
+  }
+}
+
+function scheduleGroupChatReconnect() {
+  if (isGroupChatSocketDisposed || socketReconnectTimer) return
+  socketReconnectTimer = setTimeout(() => {
+    socketReconnectTimer = undefined
+    connectGroupChatSocket()
+  }, socketReconnectDelay)
+  socketReconnectDelay = Math.min(socketReconnectDelay * 2, 30000)
+}
+
+function connectGroupChatSocket() {
+  if (isGroupChatSocketDisposed) return
+
+  const socketUrl = new URL('/api/group-chats/ws', window.location.href)
+  socketUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  socketUrl.searchParams.set('userId', currentUserId.value)
+  const socket = new WebSocket(socketUrl)
+  groupChatSocket = socket
+
+  socket.addEventListener('open', () => {
+    socketReconnectDelay = 1000
+    socket.send(JSON.stringify({ type: 'subscribe', userId: currentUserId.value }))
+    void loadGroupChats(true)
+  })
+  socket.addEventListener('message', (event) => {
+    let payload: unknown
+    try {
+      payload = JSON.parse(String(event.data))
+    } catch (error) {
+      console.error('收到无效的群聊 WebSocket 消息:', error)
+      return
+    }
+    if (!isIncomingGroupMessage(payload)) return
+    handleIncomingGroupMessage(payload.groupId, payload.message, payload.unreadCount)
+  })
+  socket.addEventListener('close', () => {
+    if (groupChatSocket === socket) groupChatSocket = null
+    scheduleGroupChatReconnect()
+  })
+  socket.addEventListener('error', () => socket.close())
+}
+
+onMounted(() => {
+  void loadGroupChats()
+  connectGroupChatSocket()
+  groupChatHeartbeatTimer = setInterval(() => {
+    void loadGroupChats(true)
+    if (groupChatSocket?.readyState === WebSocket.OPEN) {
+      groupChatSocket.send(JSON.stringify({ type: 'heartbeat', userId: currentUserId.value }))
+    }
+  }, 60000)
+})
+
+onBeforeUnmount(() => {
+  isGroupChatSocketDisposed = true
+  if (groupChatHeartbeatTimer) clearInterval(groupChatHeartbeatTimer)
+  if (socketReconnectTimer) clearTimeout(socketReconnectTimer)
+  groupChatSocket?.close()
+})
 
 function getMessageKey(message: ChatMessage) {
   return `${activeChat.value?.id}:${message.id}`
@@ -211,6 +400,9 @@ async function loadStayTomorrowPreference(target: ChatTarget) {
 async function openChat(target: ChatTarget) {
   activeChat.value = target
   activeView.value = 'chat'
+  const selectedGroup = groupChats.value.find((group) => group.id === target.id)
+  updateGroupLocalVersion(target.id)
+  if (selectedGroup) selectedGroup.newMessageCount = 0
   chatMessages.value = []
   activeMessageMenuKey.value = ''
   chatError.value = ''
@@ -232,7 +424,15 @@ async function openChat(target: ChatTarget) {
     if (!response.ok || result.code !== 0 || !result.data?.messages) {
       throw new Error(result.message || result.msg || '加载聊天记录失败')
     }
-    chatMessages.value = result.data.messages
+    const fetchedMessageIds = new Set(result.data.messages.map((message) => message.id))
+    const liveMessagesReceivedWhileLoading = chatMessages.value.filter(
+      (message) => !fetchedMessageIds.has(message.id),
+    )
+    chatMessages.value = [...result.data.messages, ...liveMessagesReceivedWhileLoading]
+    const lastReadMessageId = chatMessages.value.at(-1)?.id
+    if (lastReadMessageId) {
+      await markGroupMessageRead(target.id, lastReadMessageId)
+    }
   } catch (error) {
     chatError.value = error instanceof Error ? error.message : '加载聊天记录失败，请稍后重试'
   } finally {
@@ -323,6 +523,7 @@ function closeChat() {
   isLoadingStayTomorrow.value = false
   stayTomorrowError.value = ''
   groupLeaveError.value = ''
+  void loadGroupChats()
 }
 
 async function sendChatMessage() {
@@ -342,6 +543,7 @@ async function sendChatMessage() {
         avatar: initials.value,
         color: '#5865f2',
         content,
+        createdAt: new Date().toISOString(),
         ...(replyTarget.value
           ? {
               replyTo: {
@@ -361,7 +563,11 @@ async function sendChatMessage() {
     if (!response.ok || result.code !== 0 || !result.data?.message) {
       throw new Error(result.message || result.msg || '发送消息失败')
     }
-    chatMessages.value.push(result.data.message)
+    if (!chatMessages.value.some((message) => message.id === result.data?.message?.id)) {
+      chatMessages.value.push(result.data.message)
+    }
+    const group = groupChats.value.find((item) => item.id === target.id)
+    if (group) group.lastMessageAt = result.data.message.createdAt || new Date().toISOString()
     chatDraft.value = ''
     replyTarget.value = null
   } catch (error) {
@@ -376,7 +582,11 @@ async function joinGroupChat(group: GroupChat) {
   joiningGroupId.value = group.id
   groupJoinError.value = ''
   try {
-    const response = await fetch(`/api/group-chats/${group.id}/join`, { method: 'POST' })
+    const response = await fetch(`/api/group-chats/${group.id}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUserId.value }),
+    })
     const result = await response.json() as {
       code?: number
       message?: string
@@ -395,7 +605,6 @@ async function joinGroupChat(group: GroupChat) {
   }
 }
 
-loadGroupChats()
 </script>
 
 <template>
@@ -418,17 +627,32 @@ loadGroupChats()
           <span class="nav-glyph">▦</span> 群聊
         </button>
       </div>
-      <div v-if="joinedGroupChats.length" class="joined-groups">
-        <div class="dm-heading"><span>已加入的群聊</span></div>
+      <div v-if="joinedGroupChats.length" class="joined-groups-section">
         <button
-          v-for="group in joinedGroupChats"
-          :key="group.id"
-          class="dm-item joined-group"
-          @click="openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color })"
+          class="dm-heading joined-groups-toggle"
+          :aria-expanded="isJoinedGroupsOpen"
+          aria-controls="joined-groups-list"
+          @click="isJoinedGroupsOpen = !isJoinedGroupsOpen"
         >
-          <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
-          <span>{{ group.name }}</span>
+          <span>已加入的群聊</span>
+          <span class="joined-groups-chevron" aria-hidden="true">
+            {{ isJoinedGroupsOpen ? '⌄' : '›' }}
+          </span>
         </button>
+        <div v-if="isJoinedGroupsOpen" id="joined-groups-list" class="joined-groups">
+          <button
+            v-for="group in joinedGroupChats"
+            :key="group.id"
+            class="dm-item joined-group"
+            @click="openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color })"
+          >
+            <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
+            <span class="joined-group-name">{{ group.name }}</span>
+            <span v-if="group.newMessageCount" class="joined-group-unread">
+              {{ group.newMessageCount > 99 ? '99+' : group.newMessageCount }}
+            </span>
+          </button>
+        </div>
       </div>
       <div class="profile-bar">
         <div class="profile-info">
@@ -490,7 +714,7 @@ loadGroupChats()
           </div>
           <div v-if="groupLoadError" class="group-empty-state" role="alert">
             <strong>{{ groupLoadError }}</strong>
-            <button class="retry-button" @click="loadGroupChats">重试</button>
+            <button class="retry-button" @click="loadGroupChats()">重试</button>
           </div>
           <div v-else-if="visibleGroupChats.length" class="group-card-grid">
             <article v-for="group in visibleGroupChats" :key="group.id" class="group-card">
@@ -1096,11 +1320,51 @@ button {
 .joined-groups {
   max-height: 180px;
   overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.joined-groups::-webkit-scrollbar {
+  display: none;
+}
+
+.joined-groups-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.joined-groups-toggle:hover {
+  color: var(--text);
+}
+
+.joined-groups-chevron {
+  font-size: 15px;
+  letter-spacing: 0;
 }
 
 .joined-group {
   height: 38px;
   font-size: 12px;
+}
+
+.joined-group-name {
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.joined-group-unread {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: #d83c3e;
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
 }
 
 .group-mini-icon {
