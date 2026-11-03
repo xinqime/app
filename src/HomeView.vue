@@ -612,8 +612,6 @@ async function joinGroupChat(group: GroupChat) {
     <nav class="server-rail" aria-label="服务器">
       <button class="rail-icon home-icon selected" aria-label="群聊" title="群聊">▦</button>
       <div class="rail-divider"></div>
-      <button class="rail-icon add-server" aria-label="添加服务器" title="添加服务器">+</button>
-      <button class="rail-icon explore-icon" aria-label="探索服务器" title="探索服务器">⌕</button>
     </nav>
 
     <aside class="dm-sidebar">
@@ -663,8 +661,6 @@ async function joinGroupChat(group: GroupChat) {
           </span>
         </div>
         <div class="profile-actions">
-          <button aria-label="麦克风" title="麦克风">♩</button>
-          <button aria-label="耳机" title="耳机">◖</button>
           <button aria-label="退出登录" title="退出登录" @click="emit('logout')">↪</button>
         </div>
       </div>
@@ -686,8 +682,6 @@ async function joinGroupChat(group: GroupChat) {
         >
           群聊
         </button>
-        <button v-if="activeView !== 'chat'" class="topbar-action">商店</button>
-        <button v-if="activeView !== 'chat'" class="topbar-action">探索</button>
         <div class="topbar-spacer"></div>
         <button v-if="activeView !== 'chat'" class="topbar-icon" aria-label="收件箱" title="收件箱">▤</button>
         <button v-if="activeView !== 'chat'" class="topbar-icon help-icon" aria-label="帮助" title="帮助">?</button>
@@ -1014,18 +1008,6 @@ button {
   margin: 2px 0;
   border-radius: 2px;
   background: #35363c;
-}
-
-.add-server,
-.explore-icon {
-  color: #23a559;
-  font-size: 27px;
-  font-weight: 400;
-}
-
-.explore-icon {
-  color: #23a559;
-  font-size: 25px;
 }
 
 .dm-sidebar {
@@ -1561,7 +1543,6 @@ button {
   width: 270px;
   flex: 0 0 270px;
   padding: 35px 22px;
-  border-left: 1px solid #28292e;
 }
 
 .group-guide-icon {
