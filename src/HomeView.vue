@@ -60,6 +60,9 @@ const activeChat = ref<ChatTarget | null>(null)
 const chatMessages = ref<ChatMessage[]>([])
 const chatDraft = ref('')
 const replyTarget = ref<ChatMessage | null>(null)
+const activeMessageMenuKey = ref('')
+const blockedSenderIds = ref(new Set<string>())
+const revealedMessageKeys = ref(new Set<string>())
 const isLoadingMessages = ref(false)
 const isSendingMessage = ref(false)
 const chatError = ref('')
@@ -159,6 +162,50 @@ const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
 const currentUserId = computed(() => `${displayName.value.toLowerCase()}#0001`)
 
+function getMessageKey(message: ChatMessage) {
+  return `${activeChat.value?.type}:${activeChat.value?.id}:${message.id}`
+}
+
+function isMessageMasked(message: ChatMessage) {
+  return blockedSenderIds.value.has(message.senderId) &&
+    !revealedMessageKeys.value.has(getMessageKey(message))
+}
+
+function toggleMessageOptions(message: ChatMessage) {
+  const key = getMessageKey(message)
+  activeMessageMenuKey.value = activeMessageMenuKey.value === key ? '' : key
+}
+
+function replyToMessage(message: ChatMessage) {
+  replyTarget.value = message
+  activeMessageMenuKey.value = ''
+}
+
+function blockMessageSender(message: ChatMessage) {
+  blockedSenderIds.value.add(message.senderId)
+  for (const chatMessage of chatMessages.value) {
+    if (chatMessage.senderId === message.senderId) {
+      revealedMessageKeys.value.delete(getMessageKey(chatMessage))
+    }
+  }
+  activeMessageMenuKey.value = ''
+}
+
+function revealMessage(message: ChatMessage) {
+  revealedMessageKeys.value.add(getMessageKey(message))
+  activeMessageMenuKey.value = ''
+}
+
+function unblockMessageSender(message: ChatMessage) {
+  blockedSenderIds.value.delete(message.senderId)
+  for (const chatMessage of chatMessages.value) {
+    if (chatMessage.senderId === message.senderId) {
+      revealedMessageKeys.value.delete(getMessageKey(chatMessage))
+    }
+  }
+  activeMessageMenuKey.value = ''
+}
+
 async function loadStayTomorrowPreference(target: ChatTarget) {
   if (target.type !== 'group') return
 
@@ -198,6 +245,7 @@ async function openChat(target: ChatTarget) {
   activeChat.value = target
   activeView.value = 'chat'
   chatMessages.value = []
+  activeMessageMenuKey.value = ''
   chatError.value = ''
   replyTarget.value = null
   wantsToStayTomorrow.value = false
@@ -301,6 +349,7 @@ function closeChat() {
   activeView.value = chatReturnView.value
   activeChat.value = null
   chatMessages.value = []
+  activeMessageMenuKey.value = ''
   chatDraft.value = ''
   replyTarget.value = null
   chatError.value = ''
@@ -744,11 +793,29 @@ loadGroupChats()
                     </div>
                     <button
                       class="chat-reply-trigger"
-                      :aria-label="`回复 ${message.senderId}：${message.content}`"
-                      @click="replyTarget = message"
+                      :aria-label="isMessageMasked(message) ? `已屏蔽 ${message.senderId} 的发言，点击查看选项` : `查看 ${message.senderId} 的发言选项`"
+                      :aria-expanded="activeMessageMenuKey === getMessageKey(message)"
+                      @click="toggleMessageOptions(message)"
                     >
-                      <p>{{ message.content }}</p>
+                      <p :class="{ 'message-masked': isMessageMasked(message) }">
+                        {{ message.content }}
+                      </p>
                     </button>
+                    <div
+                      v-if="activeMessageMenuKey === getMessageKey(message)"
+                      class="message-options"
+                      role="group"
+                      :aria-label="`${message.senderId} 的发言选项`"
+                    >
+                      <template v-if="isMessageMasked(message)">
+                        <button type="button" @click="revealMessage(message)">查看内容</button>
+                        <button type="button" @click="unblockMessageSender(message)">取消屏蔽</button>
+                      </template>
+                      <template v-else>
+                        <button type="button" @click="replyToMessage(message)">回复</button>
+                        <button type="button" @click="blockMessageSender(message)">屏蔽</button>
+                      </template>
+                    </div>
                   </div>
                 </template>
               </article>
@@ -2055,6 +2122,32 @@ button {
 .chat-reply-trigger:focus-visible {
   outline: 2px solid #8e98ff;
   outline-offset: 3px;
+}
+
+.message-masked {
+  filter: blur(7px);
+  user-select: none;
+}
+
+.message-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.message-options button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #4b4d55;
+  border-radius: 5px;
+  background: #383a40;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.message-options button:hover {
+  background: #50535c;
 }
 
 .message-reply-context {
