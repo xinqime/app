@@ -9,18 +9,6 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-type Friend = {
-  id: string
-  name: string
-  initials: string
-  status: string
-  activity: string
-  activityTitle: string
-  activityIcon: string
-  color: string
-  online: boolean
-}
-
 type GroupChat = {
   id: string
   name: string
@@ -47,15 +35,13 @@ type ChatMessage = {
 }
 
 type ChatTarget = {
-  type: 'friend' | 'group'
   id: string
   name: string
   avatar: string
   color: string
 }
 
-const activeView = ref<'friends' | 'groups' | 'chat'>('friends')
-const chatReturnView = ref<'friends' | 'groups'>('friends')
+const activeView = ref<'groups' | 'chat'>('groups')
 const activeChat = ref<ChatTarget | null>(null)
 const chatMessages = ref<ChatMessage[]>([])
 const chatDraft = ref('')
@@ -66,17 +52,6 @@ const revealedMessageKeys = ref(new Set<string>())
 const isLoadingMessages = ref(false)
 const isSendingMessage = ref(false)
 const chatError = ref('')
-const activeTab = ref('在线')
-const searchQuery = ref('')
-const friendRequestName = ref('')
-const requestSent = ref(false)
-const isSendingRequest = ref(false)
-const requestError = ref('')
-const isLoading = ref(true)
-const loadError = ref('')
-const activeServer = ref('N')
-const tabs = ['在线', '全部', '待处理', '添加好友']
-const friends = ref<Friend[]>([])
 const groupChats = ref<GroupChat[]>([])
 const selectedInterest = ref('全部')
 const groupLoadError = ref('')
@@ -90,18 +65,6 @@ const isLeavingGroup = ref(false)
 const groupLeaveError = ref('')
 const isGroupToolsOpen = ref(false)
 
-const visibleFriends = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase()
-  return friends.value.filter((friend) => {
-    const matchesSearch = friend.name.toLowerCase().includes(query)
-    const matchesTab =
-      activeTab.value === '全部' ||
-      activeTab.value === '添加好友' ||
-      (activeTab.value === '在线' && friend.online)
-    return matchesSearch && matchesTab
-  })
-})
-
 const interestTags = computed(() => [
   '全部',
   ...new Set(groupChats.value.flatMap((group) => group.tags)),
@@ -112,30 +75,6 @@ const visibleGroupChats = computed(() =>
   ),
 )
 const joinedGroupChats = computed(() => groupChats.value.filter((group) => group.joined))
-
-async function loadHome() {
-  isLoading.value = true
-  loadError.value = ''
-  try {
-    const response = await fetch('/api/home')
-    const result = await response.json() as {
-      code?: number
-      message?: string
-      msg?: string
-      data?: { friends?: Friend[] }
-    }
-
-    if (!response.ok || result.code !== 0 || !result.data?.friends) {
-      throw new Error(result.message || result.msg || '加载好友数据失败')
-    }
-
-    friends.value = result.data.friends
-  } catch (error) {
-    loadError.value = error instanceof Error ? error.message : '加载好友数据失败，请稍后重试'
-  } finally {
-    isLoading.value = false
-  }
-}
 
 async function loadGroupChats() {
   groupLoadError.value = ''
@@ -163,7 +102,7 @@ const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
 const currentUserId = computed(() => `${displayName.value.toLowerCase()}#0001`)
 
 function getMessageKey(message: ChatMessage) {
-  return `${activeChat.value?.type}:${activeChat.value?.id}:${message.id}`
+  return `${activeChat.value?.id}:${message.id}`
 }
 
 function isMessageMasked(message: ChatMessage) {
@@ -207,8 +146,6 @@ function unblockMessageSender(message: ChatMessage) {
 }
 
 async function loadStayTomorrowPreference(target: ChatTarget) {
-  if (target.type !== 'group') return
-
   isLoadingStayTomorrow.value = true
   stayTomorrowError.value = ''
   try {
@@ -224,24 +161,21 @@ async function loadStayTomorrowPreference(target: ChatTarget) {
     if (!response.ok || result.code !== 0 || typeof result.data?.wantsToStayTomorrow !== 'boolean') {
       throw new Error(result.message || result.msg || '加载群聊意愿失败')
     }
-    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+    if (activeChat.value?.id === target.id) {
       wantsToStayTomorrow.value = result.data.wantsToStayTomorrow
     }
   } catch (error) {
-    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+    if (activeChat.value?.id === target.id) {
       stayTomorrowError.value = error instanceof Error ? error.message : '加载群聊意愿失败，请稍后重试'
     }
   } finally {
-    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+    if (activeChat.value?.id === target.id) {
       isLoadingStayTomorrow.value = false
     }
   }
 }
 
 async function openChat(target: ChatTarget) {
-  if (activeView.value !== 'chat') {
-    chatReturnView.value = activeView.value
-  }
   activeChat.value = target
   activeView.value = 'chat'
   chatMessages.value = []
@@ -249,13 +183,13 @@ async function openChat(target: ChatTarget) {
   chatError.value = ''
   replyTarget.value = null
   wantsToStayTomorrow.value = false
-  isLoadingStayTomorrow.value = target.type === 'group'
+  isLoadingStayTomorrow.value = true
   stayTomorrowError.value = ''
   groupLeaveError.value = ''
-  if (target.type === 'group') void loadStayTomorrowPreference(target)
+  void loadStayTomorrowPreference(target)
   isLoadingMessages.value = true
   try {
-    const response = await fetch(`/api/chats/${target.type}/${target.id}/messages`)
+    const response = await fetch(`/api/group-chats/${target.id}/messages`)
     const result = await response.json() as {
       code?: number
       message?: string
@@ -277,7 +211,6 @@ async function setStayTomorrowPreference() {
   const target = activeChat.value
   if (
     !target ||
-    target.type !== 'group' ||
     wantsToStayTomorrow.value ||
     isLeavingGroup.value ||
     isSettingStayTomorrow.value
@@ -300,11 +233,11 @@ async function setStayTomorrowPreference() {
     if (!response.ok || result.code !== 0 || result.data?.wantsToStayTomorrow !== true) {
       throw new Error(result.message || result.msg || '提交群聊意愿失败')
     }
-    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+    if (activeChat.value?.id === target.id) {
       wantsToStayTomorrow.value = true
     }
   } catch (error) {
-    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+    if (activeChat.value?.id === target.id) {
       stayTomorrowError.value = error instanceof Error ? error.message : '提交群聊意愿失败，请稍后重试'
     }
   } finally {
@@ -314,7 +247,7 @@ async function setStayTomorrowPreference() {
 
 async function leaveGroupChat() {
   const target = activeChat.value
-  if (!target || target.type !== 'group' || isLeavingGroup.value) return
+  if (!target || isLeavingGroup.value) return
 
   isLeavingGroup.value = true
   groupLeaveError.value = ''
@@ -337,7 +270,7 @@ async function leaveGroupChat() {
     if (index !== -1) groupChats.value[index] = result.data.groupChat
     closeChat()
   } catch (error) {
-    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+    if (activeChat.value?.id === target.id) {
       groupLeaveError.value = error instanceof Error ? error.message : '退出群聊失败，请稍后重试'
     }
   } finally {
@@ -346,7 +279,7 @@ async function leaveGroupChat() {
 }
 
 function closeChat() {
-  activeView.value = chatReturnView.value
+  activeView.value = 'groups'
   activeChat.value = null
   chatMessages.value = []
   activeMessageMenuKey.value = ''
@@ -367,7 +300,7 @@ async function sendChatMessage() {
   isSendingMessage.value = true
   chatError.value = ''
   try {
-    const response = await fetch(`/api/chats/${target.type}/${target.id}/messages`, {
+    const response = await fetch(`/api/group-chats/${target.id}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -429,62 +362,21 @@ async function joinGroupChat(group: GroupChat) {
   }
 }
 
-async function sendFriendRequest() {
-  if (!friendRequestName.value.trim()) return
-  isSendingRequest.value = true
-  requestError.value = ''
-  try {
-    const response = await fetch('/api/friend-requests', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: friendRequestName.value.trim() }),
-    })
-    const result = await response.json() as { code?: number; message?: string; msg?: string }
-    if (!response.ok || result.code !== 0) {
-      throw new Error(result.message || result.msg || '发送好友请求失败')
-    }
-    requestSent.value = true
-  } catch (error) {
-    requestError.value =
-      error instanceof Error ? error.message : '发送好友请求失败，请稍后重试'
-  } finally {
-    isSendingRequest.value = false
-  }
-}
-
-loadHome()
 loadGroupChats()
 </script>
 
 <template>
   <main class="discord-shell">
     <nav class="server-rail" aria-label="服务器">
-      <button class="rail-icon home-icon selected" aria-label="私信" title="私信">◈</button>
+      <button class="rail-icon home-icon selected" aria-label="群聊" title="群聊">▦</button>
       <div class="rail-divider"></div>
-      <button
-        v-for="server in ['N', 'S', '✦']"
-        :key="server"
-        class="rail-icon server-icon"
-        :class="{ selected: activeServer === server }"
-        :aria-label="`${server} 服务器`"
-        @click="activeServer = server"
-      >
-        {{ server }}
-      </button>
       <button class="rail-icon add-server" aria-label="添加服务器" title="添加服务器">+</button>
       <button class="rail-icon explore-icon" aria-label="探索服务器" title="探索服务器">⌕</button>
     </nav>
 
     <aside class="dm-sidebar">
-      <button class="sidebar-search">查找或开始新的对话 <span>⌘ K</span></button>
+      <button class="sidebar-search" @click="activeView = 'groups'">群聊 <span>⌘ K</span></button>
       <div class="sidebar-nav">
-        <button
-          class="sidebar-link"
-          :class="{ active: activeView === 'friends' }"
-          @click="activeView = 'friends'"
-        >
-          <span class="nav-glyph">◉</span> 好友
-        </button>
         <button
           class="sidebar-link"
           :class="{ active: activeView === 'groups' }"
@@ -492,8 +384,6 @@ loadGroupChats()
         >
           <span class="nav-glyph">▦</span> 群聊
         </button>
-        <button class="sidebar-link"><span class="nav-glyph">◌</span> Nitro</button>
-        <button class="sidebar-link"><span class="nav-glyph">✉</span> 消息请求</button>
       </div>
       <div v-if="joinedGroupChats.length" class="joined-groups">
         <div class="dm-heading"><span>已加入的群聊</span></div>
@@ -501,29 +391,10 @@ loadGroupChats()
           v-for="group in joinedGroupChats"
           :key="group.id"
           class="dm-item joined-group"
-          @click="openChat({ type: 'group', id: group.id, name: group.name, avatar: group.icon, color: group.color })"
+          @click="openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color })"
         >
           <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
           <span>{{ group.name }}</span>
-        </button>
-      </div>
-      <div class="dm-heading">
-        <span>私信</span>
-        <button aria-label="新建私信" title="新建私信">＋</button>
-      </div>
-      <div class="dm-list">
-        <button
-          v-for="friend in friends.slice(0, 3)"
-          :key="friend.id"
-          class="dm-item"
-          @click="openChat({ type: 'friend', id: friend.id, name: friend.name, avatar: friend.initials, color: friend.color })"
-        >
-          <span class="avatar small-avatar" :style="{ '--avatar-color': friend.color }">
-            {{ friend.initials }}
-            <i :class="{ online: friend.online }"></i>
-          </span>
-          <span>{{ friend.name }}</span>
-          <span class="dm-more">×</span>
         </button>
       </div>
       <div class="profile-bar">
