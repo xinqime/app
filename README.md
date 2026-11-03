@@ -2,16 +2,15 @@
 
 This template should help get you started developing with Vue 3 in Vite.
 
-The app includes a login/register screen and a Discord-inspired friends home page.
+The app includes a login/register screen and a group-chat home page.
 After a successful login, the app navigates to `/home`. When mock authentication is
 enabled with `VITE_USE_MOCK=true`, use `admin` / `123456` to sign in.
 
-The home page also includes an interest-tag-based group chat directory. Group chat
-mock data and direct-join responses are served by the shared MSW handlers.
-Friend and joined-group conversations use the same MSW handlers for loading and
-sending text messages. Joined-group chats also include a "See you tomorrow"
-tool for recording that the current user plans to stay in the group tomorrow;
-the preference is served by the shared MSW handlers.
+The home page includes an interest-tag-based group chat directory. Group chat
+mock data, direct-join responses, and joined-group conversations are served by
+the shared MSW handlers. Joined-group chats include a "See you tomorrow" tool
+for recording that the current user plans to stay in the group tomorrow; the
+preference is served by the shared MSW handlers.
 
 ## Recommended IDE Setup
 

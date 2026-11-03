@@ -74,54 +74,6 @@ type MockChatMessage = {
 }
 
 const mockChatMessages: Record<string, MockChatMessage[]> = {
-  'friend:luna': [
-    {
-      id: 'luna-1',
-      senderId: 'luna#1024',
-      senderName: 'Luna',
-      avatar: 'L',
-      color: '#b67bea',
-      content: '最近在循环听这张专辑，你听过吗？',
-    },
-    {
-      id: 'luna-2',
-      senderId: 'admin#0001',
-      senderName: 'admin',
-      avatar: 'A',
-      color: '#5865f2',
-      content: '还没有，晚点去听听！',
-    },
-  ],
-  'friend:mika': [
-    {
-      id: 'mika-1',
-      senderId: 'mika#2048',
-      senderName: 'Mika',
-      avatar: 'M',
-      color: '#58a6a0',
-      content: '今晚有空一起开一局吗？',
-    },
-  ],
-  'friend:kai': [
-    {
-      id: 'kai-1',
-      senderId: 'kai#3100',
-      senderName: 'Kai',
-      avatar: 'K',
-      color: '#e49b62',
-      content: '我整理了一份周末活动清单，发你看看。',
-    },
-  ],
-  'friend:sora': [
-    {
-      id: 'sora-1',
-      senderId: 'sora#4096',
-      senderName: 'Sora',
-      avatar: 'S',
-      color: '#6f8de8',
-      content: '嗨，最近怎么样？',
-    },
-  ],
   'group:indie-music': [
     {
       id: 'indie-1',
@@ -174,13 +126,6 @@ const mockChatMessages: Record<string, MockChatMessage[]> = {
   ],
 }
 
-const mockFriends = [
-  { id: 'luna', name: 'Luna', initials: 'L', color: '#b67bea' },
-  { id: 'mika', name: 'Mika', initials: 'M', color: '#58a6a0' },
-  { id: 'kai', name: 'Kai', initials: 'K', color: '#e49b62' },
-  { id: 'sora', name: 'Sora', initials: 'S', color: '#6f8de8' },
-]
-
 export const handlers = [
   http.post('/api/auth/login', async ({ request }) => {
     const { username, password } = await request.json() as { username: string; password: string }
@@ -189,68 +134,6 @@ export const handlers = [
       return HttpResponse.json({ code: 0, data: { token: 'mock-token' } })
     }
     return HttpResponse.json({ code: 1001, msg: '用户名或密码错误' })
-  }),
-  http.get('/api/home', async () => {
-    await delay(300)
-    return HttpResponse.json({
-      code: 0,
-      data: {
-        friends: [
-          {
-            id: 'luna',
-            name: 'Luna',
-            initials: 'L',
-            status: '正在听音乐',
-            activity: '正在听《Midnight City》',
-            activityTitle: '音乐',
-            activityIcon: '♫',
-            color: '#b67bea',
-            online: true,
-          },
-          {
-            id: 'mika',
-            name: 'Mika',
-            initials: 'M',
-            status: '正在玩 Minecraft',
-            activity: 'Minecraft · 生存模式',
-            activityTitle: 'Minecraft',
-            activityIcon: '▦',
-            color: '#58a6a0',
-            online: true,
-          },
-          {
-            id: 'kai',
-            name: 'Kai',
-            initials: 'K',
-            status: '暂时离开',
-            activity: '上次在线 12 分钟前',
-            activityTitle: '',
-            activityIcon: '',
-            color: '#e49b62',
-            online: false,
-          },
-          {
-            id: 'sora',
-            name: 'Sora',
-            initials: 'S',
-            status: '在线',
-            activity: '随时可以开始聊天',
-            activityTitle: '',
-            activityIcon: '',
-            color: '#6f8de8',
-            online: true,
-          },
-        ],
-      },
-    })
-  }),
-  http.post('/api/friend-requests', async ({ request }) => {
-    const { username } = await request.json() as { username: string }
-    await delay(300)
-    if (!username.trim()) {
-      return HttpResponse.json({ code: 1002, msg: '请输入好友用户名' }, { status: 400 })
-    }
-    return HttpResponse.json({ code: 0, message: '好友请求已发送。' })
   }),
   http.get('/api/group-chats', async () => {
     await delay(300)
@@ -330,29 +213,23 @@ export const handlers = [
       data: { wantsToStayTomorrow: true },
     })
   }),
-  http.get('/api/chats/:type/:id/messages', async ({ params }) => {
+  http.get('/api/group-chats/:id/messages', async ({ params }) => {
     await delay(200)
-    const type = String(params.type)
     const id = String(params.id)
-    const isKnownChat =
-      (type === 'friend' && mockFriends.some((friend) => friend.id === id)) ||
-      (type === 'group' && mockGroupChats.some((group) => group.id === id && group.joined))
-    if (!isKnownChat) {
+    const isJoinedGroup = mockGroupChats.some((group) => group.id === id && group.joined)
+    if (!isJoinedGroup) {
       return HttpResponse.json({ code: 1004, msg: '找不到这个聊天' }, { status: 404 })
     }
 
     return HttpResponse.json({
       code: 0,
-      data: { messages: mockChatMessages[`${type}:${id}`] || [] },
+      data: { messages: mockChatMessages[`group:${id}`] || [] },
     })
   }),
-  http.post('/api/chats/:type/:id/messages', async ({ params, request }) => {
-    const type = String(params.type)
+  http.post('/api/group-chats/:id/messages', async ({ params, request }) => {
     const id = String(params.id)
-    const isKnownChat =
-      (type === 'friend' && mockFriends.some((friend) => friend.id === id)) ||
-      (type === 'group' && mockGroupChats.some((group) => group.id === id && group.joined))
-    if (!isKnownChat) {
+    const isJoinedGroup = mockGroupChats.some((group) => group.id === id && group.joined)
+    if (!isJoinedGroup) {
       return HttpResponse.json({ code: 1004, msg: '找不到这个聊天' }, { status: 404 })
     }
 
@@ -363,10 +240,10 @@ export const handlers = [
 
     const message: MockChatMessage = {
       ...body,
-      id: `${type}-${id}-${Date.now()}`,
+      id: `group-${id}-${Date.now()}`,
       content: body.content.trim(),
     }
-    const chatKey = `${type}:${id}`
+    const chatKey = `group:${id}`
     mockChatMessages[chatKey] ??= []
     mockChatMessages[chatKey].push(message)
 

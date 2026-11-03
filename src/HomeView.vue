@@ -413,22 +413,14 @@ loadGroupChats()
       </div>
     </aside>
 
-    <section class="friends-page">
+    <section class="main-page">
       <header class="topbar">
         <button v-if="activeView === 'chat'" class="chat-back" aria-label="返回" @click="closeChat">‹</button>
         <div class="topbar-title">
-          <span>{{ activeView === 'friends' ? '◉' : activeView === 'groups' ? '▦' : activeChat?.avatar }}</span>
-          {{ activeView === 'friends' ? '好友' : activeView === 'groups' ? '群聊' : activeChat?.name }}
+          <span>{{ activeView === 'groups' ? '▦' : activeChat?.avatar }}</span>
+          {{ activeView === 'groups' ? '群聊' : activeChat?.name }}
         </div>
         <div v-if="activeView !== 'chat'" class="topbar-divider"></div>
-        <button
-          v-if="activeView !== 'chat'"
-          class="topbar-action view-switch"
-          :class="{ active: activeView === 'friends' }"
-          @click="activeView = 'friends'"
-        >
-          好友
-        </button>
         <button
           v-if="activeView !== 'chat'"
           class="topbar-action view-switch"
@@ -444,115 +436,7 @@ loadGroupChats()
         <button v-if="activeView !== 'chat'" class="topbar-icon help-icon" aria-label="帮助" title="帮助">?</button>
       </header>
 
-      <div v-if="activeView === 'friends'" class="friends-layout">
-        <section class="friends-main">
-          <div class="friends-toolbar">
-            <div class="friend-tabs" role="tablist" aria-label="好友筛选">
-              <button
-                v-for="tab in tabs"
-                :key="tab"
-                role="tab"
-                :aria-selected="activeTab === tab"
-                :class="{ selected: activeTab === tab, 'add-friend-tab': tab === '添加好友' }"
-                @click="activeTab = tab; requestSent = false; requestError = ''"
-              >
-                {{ tab }}
-              </button>
-            </div>
-            <label class="friend-search">
-              <input v-model="searchQuery" type="search" placeholder="搜索" aria-label="搜索好友" />
-              <span>⌕</span>
-            </label>
-          </div>
-
-          <div v-if="activeTab === '添加好友'" class="add-friend-panel">
-            <h1>添加好友</h1>
-            <p>你可以使用用户名添加好友。</p>
-            <form class="add-friend-form" @submit.prevent="sendFriendRequest">
-              <input
-                v-model="friendRequestName"
-                aria-label="好友用户名"
-                placeholder="输入用户名，例如 Luna"
-              />
-              <button type="submit" :disabled="!friendRequestName.trim() || requestSent || isSendingRequest">
-                {{ isSendingRequest ? '正在发送…' : requestSent ? '已发送请求' : '发送好友请求' }}
-              </button>
-            </form>
-            <p v-if="requestSent" class="request-feedback" role="status">好友请求已发送。</p>
-            <p v-if="requestError" class="request-error" role="alert">{{ requestError }}</p>
-          </div>
-
-          <template v-else>
-            <h2 class="section-heading">
-              {{ activeTab === '待处理' ? '待处理的好友请求' : activeTab === '全部' ? '所有好友' : '在线' }}
-              <span>{{ isLoading ? '…' : visibleFriends.length }}</span>
-            </h2>
-            <div v-if="isLoading" class="empty-state" role="status">
-              <strong>正在加载好友…</strong>
-            </div>
-            <div v-else-if="loadError" class="empty-state" role="alert">
-              <strong>{{ loadError }}</strong>
-              <button class="retry-button" @click="loadHome">重试</button>
-            </div>
-            <div v-else-if="visibleFriends.length" class="friend-list">
-              <article v-for="friend in visibleFriends" :key="friend.name" class="friend-row">
-                <span class="avatar friend-avatar" :style="{ '--avatar-color': friend.color }">
-                  {{ friend.initials }}
-                  <i :class="{ online: friend.online }"></i>
-                </span>
-                <div class="friend-details">
-                  <strong>{{ friend.name }}</strong>
-                  <span>{{ friend.status }}</span>
-                </div>
-                <div class="friend-activity">{{ friend.activity }}</div>
-                <div class="friend-actions">
-                  <button
-                    :aria-label="`给 ${friend.name} 发消息`"
-                    title="发消息"
-                    @click="openChat({ type: 'friend', id: friend.id, name: friend.name, avatar: friend.initials, color: friend.color })"
-                  >
-                    ▰
-                  </button>
-                  <button :aria-label="`更多关于 ${friend.name} 的操作`" title="更多">•••</button>
-                </div>
-              </article>
-            </div>
-            <div v-else class="empty-state">
-              <span class="empty-art" aria-hidden="true">⌕</span>
-              <strong>{{ activeTab === '待处理' ? '暂时没有待处理请求' : '没有找到好友' }}</strong>
-              <p>{{ activeTab === '待处理' ? '有新的好友请求时，它们会显示在这里。' : '试试其他搜索内容，或添加一位新朋友。' }}</p>
-            </div>
-          </template>
-        </section>
-
-        <aside class="activity-panel">
-          <h2>活跃动态</h2>
-          <p class="activity-intro">看看你的朋友们正在做什么。</p>
-          <article
-            v-for="friend in friends.filter((item) => item.online && item.activityTitle).slice(0, 2)"
-            :key="friend.name"
-            class="activity-card"
-          >
-            <div class="activity-user">
-              <span class="avatar activity-avatar" :style="{ '--avatar-color': friend.color }">
-                {{ friend.initials }}<i class="online"></i>
-              </span>
-              <div><strong>{{ friend.name }}</strong><small>正在 {{ friend.status.replace('正在', '') }}</small></div>
-            </div>
-            <div class="activity-detail">
-              <span class="activity-cover">{{ friend.activityIcon }}</span>
-              <span><strong>{{ friend.activityTitle }}</strong><small>{{ friend.activity }}</small></span>
-            </div>
-            <button class="join-button">一起加入</button>
-          </article>
-          <div class="activity-note">
-            <span>✦</span>
-            <p>当朋友开始游戏或分享动态时，你会在这里看到他们。</p>
-          </div>
-        </aside>
-      </div>
-
-      <div v-else-if="activeView === 'groups'" class="groups-layout">
+      <div v-if="activeView === 'groups'" class="groups-layout">
         <section class="groups-main">
           <div class="groups-heading">
             <div>
@@ -593,7 +477,7 @@ loadGroupChats()
                     :class="{ joined: group.joined }"
                     :disabled="joiningGroupId === group.id"
                     @click="group.joined
-                      ? openChat({ type: 'group', id: group.id, name: group.name, avatar: group.icon, color: group.color })
+                      ? openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color })
                       : joinGroupChat(group)"
                   >
                     {{
@@ -627,7 +511,7 @@ loadGroupChats()
 
       <section v-else class="chat-view" aria-label="聊天">
         <div class="chat-context">
-          <span>{{ activeChat?.type === 'group' ? '群聊' : '好友' }}</span>
+          <span>群聊</span>
           <strong>{{ activeChat?.name }}</strong>
         </div>
         <div class="chat-content">
@@ -693,7 +577,7 @@ loadGroupChats()
             </div>
           </div>
           <aside
-            v-if="activeChat?.type === 'group' && isGroupToolsOpen"
+            v-if="isGroupToolsOpen"
             id="group-chat-tools"
             class="chat-tools"
             aria-label="群聊工具"
@@ -750,7 +634,7 @@ loadGroupChats()
             {{ isSendingMessage ? '发送中…' : '发送' }}
           </button>
           <button
-            v-if="activeChat?.type === 'group'"
+            v-if="activeChat"
             type="button"
             class="chat-tools-toggle"
             :aria-expanded="isGroupToolsOpen"
@@ -1080,7 +964,7 @@ button {
   color: var(--text);
 }
 
-.friends-page {
+.main-page {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -1146,384 +1030,11 @@ button {
   line-height: 16px;
 }
 
-.friends-layout {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-}
-
-.friends-main {
-  min-width: 0;
-  flex: 1;
-  padding: 24px 30px;
-}
-
-.friends-toolbar {
-  display: flex;
-  min-height: 42px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid #45474e;
-}
-
-.friend-tabs {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.friend-tabs button {
-  padding: 7px 4px;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.friend-tabs button:hover,
-.friend-tabs button.selected {
-  background: #404249;
-  color: var(--text);
-}
-
-.friend-tabs .add-friend-tab {
-  padding: 6px 9px;
-  background: #248046;
-  color: white;
-}
-
-.friend-tabs .add-friend-tab:hover,
-.friend-tabs .add-friend-tab.selected {
-  background: #2d9a55;
-  color: white;
-}
-
-.friend-search {
-  display: flex;
-  width: 180px;
-  height: 30px;
-  align-items: center;
-  padding: 0 8px;
-  border-radius: 4px;
-  background: #1e1f22;
-  color: var(--subtle);
-}
-
-.friend-search input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-}
-
-.friend-search input::placeholder {
-  color: var(--subtle);
-}
-
-.friend-search span {
-  font-size: 18px;
-}
-
-.section-heading {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 22px 0 10px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.section-heading span {
-  color: var(--subtle);
-  font-size: 10px;
-}
-
-.friend-row {
-  display: flex;
-  min-height: 68px;
-  align-items: center;
-  gap: 12px;
-  padding: 0 8px;
-  border-top: 1px solid #3b3d43;
-}
-
-.friend-row:hover {
-  border-radius: 7px;
-  background: #393b42;
-}
-
-.friend-avatar {
-  width: 38px;
-  height: 38px;
-}
-
-.friend-avatar i {
-  border-color: #313338;
-}
-
-.friend-details {
-  display: grid;
-  min-width: 90px;
-  gap: 4px;
-}
-
-.friend-details strong {
-  font-size: 14px;
-}
-
-.friend-details span,
-.friend-activity {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.friend-activity {
-  overflow: hidden;
-  margin-left: auto;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.friend-actions {
-  display: flex;
-  gap: 8px;
-  margin-left: 12px;
-}
-
-.friend-actions button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 50%;
-  background: #232428;
-  color: #dbdee1;
-}
-
-.friend-actions button:hover {
-  background: #1e1f22;
-  color: white;
-}
-
-.empty-state {
-  display: grid;
-  justify-items: center;
-  gap: 9px;
-  padding: 54px 10px;
-  color: var(--muted);
-  text-align: center;
-}
-
-.empty-art {
-  display: grid;
-  width: 86px;
-  height: 86px;
-  place-items: center;
-  margin-bottom: 5px;
-  border-radius: 50%;
-  background: #292a2f;
-  color: #737b86;
-  font-size: 38px;
-}
-
-.empty-state strong {
-  color: var(--text);
-}
-
-.empty-state p,
-.activity-intro {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.add-friend-panel {
-  padding: 28px 2px;
-}
-
-.add-friend-panel h1 {
-  margin: 0 0 8px;
-  font-size: 18px;
-}
-
-.add-friend-panel p {
-  margin: 0 0 18px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.add-friend-form {
-  display: flex;
-  max-width: 620px;
-  height: 48px;
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid #202125;
-  border-radius: 7px;
-  background: #1e1f22;
-}
-
-.add-friend-form input {
-  min-width: 0;
-  flex: 1;
-  padding: 0 9px;
-  border: 0;
-  outline: none;
-  background: transparent;
-  font-size: 13px;
-}
-
-.add-friend-form input::placeholder {
-  color: #777e88;
-}
-
-.add-friend-form button,
-.join-button {
-  padding: 0 12px;
-  border-radius: 4px;
-  background: var(--accent);
-  color: white;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.add-friend-form button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.add-friend-panel .request-feedback {
-  margin-top: 12px;
-  color: #57f287;
-}
-
-.add-friend-panel .request-error {
-  margin-top: 12px;
-  color: #f2a6a6;
-}
-
 .retry-button {
   padding: 7px 12px;
   border-radius: 4px;
   background: var(--accent);
   color: white;
-}
-
-.activity-panel {
-  width: 292px;
-  flex: 0 0 292px;
-  padding: 24px 20px;
-  border-left: 1px solid #28292e;
-}
-
-.activity-panel h2 {
-  margin: 2px 0 8px;
-  font-size: 16px;
-}
-
-.activity-intro {
-  margin-bottom: 20px;
-  line-height: 1.6;
-}
-
-.activity-card {
-  margin-bottom: 12px;
-  padding: 13px;
-  border: 1px solid #41434a;
-  border-radius: 8px;
-  background: #2b2d31;
-}
-
-.activity-user,
-.activity-detail {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.activity-avatar {
-  width: 34px;
-  height: 34px;
-  font-size: 12px;
-}
-
-.activity-avatar i {
-  border-color: #2b2d31;
-}
-
-.activity-user > div,
-.activity-detail > span:last-child {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.activity-user strong,
-.activity-detail strong {
-  font-size: 12px;
-}
-
-.activity-user small,
-.activity-detail small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.activity-detail {
-  margin: 13px 0;
-  padding: 10px;
-  border-radius: 5px;
-  background: #202125;
-}
-
-.activity-cover {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  place-items: center;
-  border-radius: 4px;
-  background: linear-gradient(135deg, #5c437d, #202c53);
-  font-size: 18px;
-}
-
-.join-button {
-  width: 100%;
-  height: 30px;
-  background: #404249;
-}
-
-.join-button:hover {
-  background: #4b4e56;
-}
-
-.activity-note {
-  display: flex;
-  gap: 10px;
-  margin-top: 20px;
-  color: var(--subtle);
-}
-
-.activity-note span {
-  color: #f0b232;
-}
-
-.activity-note p {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.6;
 }
 
 .joined-groups {
@@ -2166,10 +1677,6 @@ button {
 }
 
 @media (max-width: 1100px) {
-  .activity-panel {
-    display: none;
-  }
-
   .group-guide {
     display: none;
   }
@@ -2178,10 +1685,6 @@ button {
 @media (max-width: 760px) {
   .dm-sidebar {
     display: none;
-  }
-
-  .friends-main {
-    padding: 18px 16px;
   }
 
   .groups-main {
@@ -2251,26 +1754,6 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .friends-toolbar {
-    align-items: flex-start;
-    flex-direction: column-reverse;
-    padding-bottom: 8px;
-  }
-
-  .friend-search {
-    width: 100%;
-  }
-
-  .friend-tabs {
-    width: 100%;
-    justify-content: space-between;
-    gap: 5px;
-  }
-
-  .friend-tabs button {
-    font-size: 12px;
-  }
-
   .topbar {
     gap: 8px;
     padding: 0 12px;
@@ -2296,19 +1779,6 @@ button {
     width: 42px;
     height: 42px;
     flex-basis: 42px;
-  }
-
-  .friend-activity {
-    display: none;
-  }
-
-  .friend-actions {
-    gap: 4px;
-    margin-left: auto;
-  }
-
-  .friend-tabs {
-    overflow-x: auto;
   }
 
   .topbar-divider,
