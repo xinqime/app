@@ -105,9 +105,27 @@ function getMessageKey(message: ChatMessage) {
   return `${activeChat.value?.id}:${message.id}`
 }
 
+function getSenderBlockKey(senderId: string) {
+  return `${currentUserId.value}:${activeChat.value?.id}:${senderId}`
+}
+
+function isSenderBlocked(senderId: string) {
+  return blockedSenderIds.value.has(getSenderBlockKey(senderId))
+}
+
 function isMessageMasked(message: ChatMessage) {
-  return blockedSenderIds.value.has(message.senderId) &&
+  return isSenderBlocked(message.senderId) &&
     !revealedMessageKeys.value.has(getMessageKey(message))
+}
+
+function getReplyPreviewKey(message: ChatMessage) {
+  return `reply:${getMessageKey(message)}`
+}
+
+function isReplyPreviewMasked(message: ChatMessage) {
+  return !!message.replyTo &&
+    isSenderBlocked(message.replyTo.senderId) &&
+    !revealedMessageKeys.value.has(getReplyPreviewKey(message))
 }
 
 function toggleMessageOptions(message: ChatMessage) {
@@ -121,10 +139,13 @@ function replyToMessage(message: ChatMessage) {
 }
 
 function blockMessageSender(message: ChatMessage) {
-  blockedSenderIds.value.add(message.senderId)
+  blockedSenderIds.value.add(getSenderBlockKey(message.senderId))
   for (const chatMessage of chatMessages.value) {
     if (chatMessage.senderId === message.senderId) {
       revealedMessageKeys.value.delete(getMessageKey(chatMessage))
+    }
+    if (chatMessage.replyTo?.senderId === message.senderId) {
+      revealedMessageKeys.value.delete(getReplyPreviewKey(chatMessage))
     }
   }
   activeMessageMenuKey.value = ''
@@ -135,11 +156,23 @@ function revealMessage(message: ChatMessage) {
   activeMessageMenuKey.value = ''
 }
 
+function toggleReplyPreview(message: ChatMessage) {
+  const key = getReplyPreviewKey(message)
+  if (revealedMessageKeys.value.has(key)) {
+    revealedMessageKeys.value.delete(key)
+  } else {
+    revealedMessageKeys.value.add(key)
+  }
+}
+
 function unblockMessageSender(message: ChatMessage) {
-  blockedSenderIds.value.delete(message.senderId)
+  blockedSenderIds.value.delete(getSenderBlockKey(message.senderId))
   for (const chatMessage of chatMessages.value) {
     if (chatMessage.senderId === message.senderId) {
       revealedMessageKeys.value.delete(getMessageKey(chatMessage))
+    }
+    if (chatMessage.replyTo?.senderId === message.senderId) {
+      revealedMessageKeys.value.delete(getReplyPreviewKey(chatMessage))
     }
   }
   activeMessageMenuKey.value = ''
@@ -441,7 +474,7 @@ loadGroupChats()
           <div class="groups-heading">
             <div>
               <h1>找到你的兴趣群聊</h1>
-              <p>按兴趣标签浏览，点击即可直接加入，无需申请。群聊每天凌晨自动删除，除非有人主动选择延续</p>
+              <p>按兴趣标签浏览，点击即可直接加入，无需申请。<br>每天凌晨自动清除群聊，除非有人主动选择延续。</p>
             </div>
           </div>
           <div class="interest-filters" role="group" aria-label="按兴趣标签筛选群聊">
@@ -531,9 +564,16 @@ loadGroupChats()
               >
                 <template v-if="message.senderId === currentUserId">
                   <div class="chat-message-body">
-                    <div v-if="message.replyTo" class="message-reply-context">
+                    <button
+                      v-if="message.replyTo"
+                      type="button"
+                      class="message-reply-context"
+                      :class="{ 'message-masked': isReplyPreviewMasked(message) }"
+                      :aria-label="isReplyPreviewMasked(message) ? '已屏蔽的引用内容，点击查看原文' : '查看引用内容'"
+                      @click="toggleReplyPreview(message)"
+                    >
                       回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
-                    </div>
+                    </button>
                     <p>{{ message.content }}</p>
                   </div>
                 </template>
@@ -543,9 +583,16 @@ loadGroupChats()
                   </span>
                   <div class="chat-message-body">
                     <strong class="chat-sender-id">{{ message.senderId }}</strong>
-                    <div v-if="message.replyTo" class="message-reply-context">
+                    <button
+                      v-if="message.replyTo"
+                      type="button"
+                      class="message-reply-context"
+                      :class="{ 'message-masked': isReplyPreviewMasked(message) }"
+                      :aria-label="isReplyPreviewMasked(message) ? '已屏蔽的引用内容，点击查看原文' : '查看引用内容'"
+                      @click="toggleReplyPreview(message)"
+                    >
                       回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
-                    </div>
+                    </button>
                     <button
                       class="chat-reply-trigger"
                       :aria-label="isMessageMasked(message) ? `已屏蔽 ${message.senderId} 的发言，点击查看选项` : `查看 ${message.senderId} 的发言选项`"
@@ -568,7 +615,16 @@ loadGroupChats()
                       </template>
                       <template v-else>
                         <button type="button" @click="replyToMessage(message)">回复</button>
-                        <button type="button" @click="blockMessageSender(message)">屏蔽</button>
+                        <button
+                          v-if="isSenderBlocked(message.senderId)"
+                          type="button"
+                          @click="unblockMessageSender(message)"
+                        >
+                          取消屏蔽
+                        </button>
+                        <button v-else type="button" @click="blockMessageSender(message)">
+                          屏蔽
+                        </button>
                       </template>
                     </div>
                   </div>
@@ -1533,6 +1589,8 @@ button {
 }
 
 .message-reply-context {
+  display: block;
+  width: 100%;
   overflow: hidden;
   max-width: 100%;
   margin: 0 0 5px;
@@ -1542,8 +1600,14 @@ button {
   background: #292a2f;
   color: var(--muted);
   font-size: 11px;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.message-reply-context:hover {
+  background: #33353b;
+  color: var(--text);
 }
 
 .chat-state {
