@@ -9,7 +9,9 @@ enabled with `VITE_USE_MOCK=true`, use `admin` / `123456` to sign in.
 The home page also includes an interest-tag-based group chat directory. Group chat
 mock data and direct-join responses are served by the shared MSW handlers.
 Friend and joined-group conversations use the same MSW handlers for loading and
-sending text messages.
+sending text messages. Joined-group chats also include a "See you tomorrow"
+tool for recording that the current user plans to stay in the group tomorrow;
+the preference is served by the shared MSW handlers.
 
 ## Recommended IDE Setup
 

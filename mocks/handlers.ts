@@ -58,6 +58,8 @@ const mockGroupChats = [
   },
 ]
 
+const mockStayTomorrowPreferences = new Set<string>()
+
 type MockChatMessage = {
   id: string
   senderId: string
@@ -268,6 +270,65 @@ export const handlers = [
     }
 
     return HttpResponse.json({ code: 0, message: '已直接加入群聊', data: { groupChat } })
+  }),
+  http.post('/api/group-chats/:id/leave', async ({ params, request }) => {
+    await delay(250)
+    const groupChat = mockGroupChats.find((group) => group.id === params.id && group.joined)
+    if (!groupChat) {
+      return HttpResponse.json({ code: 1004, msg: '找不到已加入的群聊' }, { status: 404 })
+    }
+
+    const body = await request.json() as { userId?: string }
+    const userId = body.userId?.trim()
+    if (!userId) {
+      return HttpResponse.json({ code: 1002, msg: '缺少当前用户信息' }, { status: 400 })
+    }
+
+    groupChat.joined = false
+    groupChat.memberCount = Math.max(0, groupChat.memberCount - 1)
+    groupChat.onlineCount = Math.max(0, groupChat.onlineCount - 1)
+    mockStayTomorrowPreferences.delete(`${groupChat.id}:${userId}`)
+    return HttpResponse.json({
+      code: 0,
+      message: '已退出群聊',
+      data: { groupChat },
+    })
+  }),
+  http.get('/api/group-chats/:id/see-you-tomorrow', async ({ params, request }) => {
+    const groupChat = mockGroupChats.find((group) => group.id === params.id && group.joined)
+    if (!groupChat) {
+      return HttpResponse.json({ code: 1004, msg: '找不到这个群聊' }, { status: 404 })
+    }
+
+    const userId = new URL(request.url).searchParams.get('userId')?.trim()
+    if (!userId) {
+      return HttpResponse.json({ code: 1002, msg: '缺少当前用户信息' }, { status: 400 })
+    }
+
+    const preferenceKey = `${groupChat.id}:${userId}`
+    return HttpResponse.json({
+      code: 0,
+      data: { wantsToStayTomorrow: mockStayTomorrowPreferences.has(preferenceKey) },
+    })
+  }),
+  http.post('/api/group-chats/:id/see-you-tomorrow', async ({ params, request }) => {
+    const groupChat = mockGroupChats.find((group) => group.id === params.id && group.joined)
+    if (!groupChat) {
+      return HttpResponse.json({ code: 1004, msg: '找不到这个群聊' }, { status: 404 })
+    }
+
+    const body = await request.json() as { userId?: string }
+    const userId = body.userId?.trim()
+    if (!userId) {
+      return HttpResponse.json({ code: 1002, msg: '缺少当前用户信息' }, { status: 400 })
+    }
+
+    mockStayTomorrowPreferences.add(`${groupChat.id}:${userId}`)
+    return HttpResponse.json({
+      code: 0,
+      message: '已告知群聊你明天还会在',
+      data: { wantsToStayTomorrow: true },
+    })
   }),
   http.get('/api/chats/:type/:id/messages', async ({ params }) => {
     await delay(200)

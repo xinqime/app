@@ -79,6 +79,13 @@ const selectedInterest = ref('全部')
 const groupLoadError = ref('')
 const joiningGroupId = ref('')
 const groupJoinError = ref('')
+const wantsToStayTomorrow = ref(false)
+const isLoadingStayTomorrow = ref(false)
+const isSettingStayTomorrow = ref(false)
+const stayTomorrowError = ref('')
+const isLeavingGroup = ref(false)
+const groupLeaveError = ref('')
+const isGroupToolsOpen = ref(false)
 
 const visibleFriends = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -152,6 +159,38 @@ const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
 const currentUserId = computed(() => `${displayName.value.toLowerCase()}#0001`)
 
+async function loadStayTomorrowPreference(target: ChatTarget) {
+  if (target.type !== 'group') return
+
+  isLoadingStayTomorrow.value = true
+  stayTomorrowError.value = ''
+  try {
+    const response = await fetch(
+      `/api/group-chats/${target.id}/see-you-tomorrow?userId=${encodeURIComponent(currentUserId.value)}`,
+    )
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { wantsToStayTomorrow?: boolean }
+    }
+    if (!response.ok || result.code !== 0 || typeof result.data?.wantsToStayTomorrow !== 'boolean') {
+      throw new Error(result.message || result.msg || '加载群聊意愿失败')
+    }
+    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+      wantsToStayTomorrow.value = result.data.wantsToStayTomorrow
+    }
+  } catch (error) {
+    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+      stayTomorrowError.value = error instanceof Error ? error.message : '加载群聊意愿失败，请稍后重试'
+    }
+  } finally {
+    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+      isLoadingStayTomorrow.value = false
+    }
+  }
+}
+
 async function openChat(target: ChatTarget) {
   if (activeView.value !== 'chat') {
     chatReturnView.value = activeView.value
@@ -161,6 +200,11 @@ async function openChat(target: ChatTarget) {
   chatMessages.value = []
   chatError.value = ''
   replyTarget.value = null
+  wantsToStayTomorrow.value = false
+  isLoadingStayTomorrow.value = target.type === 'group'
+  stayTomorrowError.value = ''
+  groupLeaveError.value = ''
+  if (target.type === 'group') void loadStayTomorrowPreference(target)
   isLoadingMessages.value = true
   try {
     const response = await fetch(`/api/chats/${target.type}/${target.id}/messages`)
@@ -181,6 +225,78 @@ async function openChat(target: ChatTarget) {
   }
 }
 
+async function setStayTomorrowPreference() {
+  const target = activeChat.value
+  if (
+    !target ||
+    target.type !== 'group' ||
+    wantsToStayTomorrow.value ||
+    isLeavingGroup.value ||
+    isSettingStayTomorrow.value
+  ) return
+
+  isSettingStayTomorrow.value = true
+  stayTomorrowError.value = ''
+  try {
+    const response = await fetch(`/api/group-chats/${target.id}/see-you-tomorrow`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUserId.value }),
+    })
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { wantsToStayTomorrow?: boolean }
+    }
+    if (!response.ok || result.code !== 0 || result.data?.wantsToStayTomorrow !== true) {
+      throw new Error(result.message || result.msg || '提交群聊意愿失败')
+    }
+    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+      wantsToStayTomorrow.value = true
+    }
+  } catch (error) {
+    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+      stayTomorrowError.value = error instanceof Error ? error.message : '提交群聊意愿失败，请稍后重试'
+    }
+  } finally {
+    isSettingStayTomorrow.value = false
+  }
+}
+
+async function leaveGroupChat() {
+  const target = activeChat.value
+  if (!target || target.type !== 'group' || isLeavingGroup.value) return
+
+  isLeavingGroup.value = true
+  groupLeaveError.value = ''
+  try {
+    const response = await fetch(`/api/group-chats/${target.id}/leave`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUserId.value }),
+    })
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { groupChat?: GroupChat }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.groupChat) {
+      throw new Error(result.message || result.msg || '退出群聊失败')
+    }
+    const index = groupChats.value.findIndex((group) => group.id === target.id)
+    if (index !== -1) groupChats.value[index] = result.data.groupChat
+    closeChat()
+  } catch (error) {
+    if (activeChat.value?.type === 'group' && activeChat.value.id === target.id) {
+      groupLeaveError.value = error instanceof Error ? error.message : '退出群聊失败，请稍后重试'
+    }
+  } finally {
+    isLeavingGroup.value = false
+  }
+}
+
 function closeChat() {
   activeView.value = chatReturnView.value
   activeChat.value = null
@@ -188,6 +304,10 @@ function closeChat() {
   chatDraft.value = ''
   replyTarget.value = null
   chatError.value = ''
+  wantsToStayTomorrow.value = false
+  isLoadingStayTomorrow.value = false
+  stayTomorrowError.value = ''
+  groupLeaveError.value = ''
 }
 
 async function sendChatMessage() {
@@ -517,7 +637,7 @@ loadGroupChats()
           <div class="groups-heading">
             <div>
               <h1>找到你的兴趣群聊</h1>
-              <p>按兴趣标签浏览，点击即可直接加入，无需申请。</p>
+              <p>按兴趣标签浏览，点击即可直接加入，无需申请。群聊每天凌晨自动删除，除非有人主动选择延续</p>
             </div>
           </div>
           <div class="interest-filters" role="group" aria-label="按兴趣标签筛选群聊">
@@ -590,46 +710,86 @@ loadGroupChats()
           <span>{{ activeChat?.type === 'group' ? '群聊' : '好友' }}</span>
           <strong>{{ activeChat?.name }}</strong>
         </div>
-        <div v-if="isLoadingMessages" class="chat-state" role="status">正在加载聊天记录…</div>
-        <div v-else-if="chatError && !chatMessages.length" class="chat-state" role="alert">
-          <strong>{{ chatError }}</strong>
-          <button class="retry-button" @click="activeChat && openChat(activeChat)">重试</button>
-        </div>
-        <div v-else class="chat-messages" role="log" aria-label="聊天消息">
-          <div v-if="!chatMessages.length" class="chat-state">还没有消息，发送第一条消息吧。</div>
-          <article
-            v-for="message in chatMessages"
-            :key="message.id"
-            class="chat-message"
-            :class="{ 'own-message': message.senderId === currentUserId }"
+        <div class="chat-content">
+          <div class="chat-message-pane">
+            <div v-if="isLoadingMessages" class="chat-state" role="status">正在加载聊天记录…</div>
+            <div v-else-if="chatError && !chatMessages.length" class="chat-state" role="alert">
+              <strong>{{ chatError }}</strong>
+              <button class="retry-button" @click="activeChat && openChat(activeChat)">重试</button>
+            </div>
+            <div v-else class="chat-messages" role="log" aria-label="聊天消息">
+              <div v-if="!chatMessages.length" class="chat-state">还没有消息，发送第一条消息吧。</div>
+              <article
+                v-for="message in chatMessages"
+                :key="message.id"
+                class="chat-message"
+                :class="{ 'own-message': message.senderId === currentUserId }"
+              >
+                <template v-if="message.senderId === currentUserId">
+                  <div class="chat-message-body">
+                    <div v-if="message.replyTo" class="message-reply-context">
+                      回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
+                    </div>
+                    <p>{{ message.content }}</p>
+                  </div>
+                </template>
+                <template v-else>
+                  <span class="avatar chat-avatar" :style="{ '--avatar-color': message.color }">
+                    {{ message.avatar }}
+                  </span>
+                  <div class="chat-message-body">
+                    <strong class="chat-sender-id">{{ message.senderId }}</strong>
+                    <div v-if="message.replyTo" class="message-reply-context">
+                      回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
+                    </div>
+                    <button
+                      class="chat-reply-trigger"
+                      :aria-label="`回复 ${message.senderId}：${message.content}`"
+                      @click="replyTarget = message"
+                    >
+                      <p>{{ message.content }}</p>
+                    </button>
+                  </div>
+                </template>
+              </article>
+            </div>
+          </div>
+          <aside
+            v-if="activeChat?.type === 'group' && isGroupToolsOpen"
+            id="group-chat-tools"
+            class="chat-tools"
+            aria-label="群聊工具"
           >
-            <template v-if="message.senderId === currentUserId">
-              <div class="chat-message-body">
-                <div v-if="message.replyTo" class="message-reply-context">
-                  回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
-                </div>
-                <p>{{ message.content }}</p>
-              </div>
-            </template>
-            <template v-else>
-              <span class="avatar chat-avatar" :style="{ '--avatar-color': message.color }">
-                {{ message.avatar }}
-              </span>
-              <div class="chat-message-body">
-                <strong class="chat-sender-id">{{ message.senderId }}</strong>
-                <div v-if="message.replyTo" class="message-reply-context">
-                  回复 {{ message.replyTo.senderId }}：{{ message.replyTo.content }}
-                </div>
-                <button
-                  class="chat-reply-trigger"
-                  :aria-label="`回复 ${message.senderId}：${message.content}`"
-                  @click="replyTarget = message"
-                >
-                  <p>{{ message.content }}</p>
-                </button>
-              </div>
-            </template>
-          </article>
+            <button
+              class="chat-tool-button"
+              :class="{ selected: wantsToStayTomorrow }"
+              :aria-pressed="wantsToStayTomorrow"
+              title="延续群聊到明天"
+              :disabled="wantsToStayTomorrow || isLoadingStayTomorrow || isSettingStayTomorrow || isLeavingGroup"
+              @click="setStayTomorrowPreference"
+            >
+              <span aria-hidden="true">☀</span>
+              {{ wantsToStayTomorrow ? '明天见 ✓' : '明天见' }}
+            </button>
+            <p v-if="wantsToStayTomorrow" class="chat-tool-confirmation" role="status">
+              已告诉群聊：你明天还会在。
+            </p>
+            <p v-if="stayTomorrowError" class="chat-tool-error" role="alert">
+              {{ stayTomorrowError }}
+            </p>
+            <button
+              class="chat-tool-button leave-group-button"
+              title="立刻退出该群"
+              :disabled="isLeavingGroup || isLoadingStayTomorrow || isSettingStayTomorrow"
+              @click="leaveGroupChat"
+            >
+              <span aria-hidden="true">↪</span>
+              {{ isLeavingGroup ? '正在退出…' : '退出群聊' }}
+            </button>
+            <p v-if="groupLeaveError" class="chat-tool-error" role="alert">
+              {{ groupLeaveError }}
+            </p>
+          </aside>
         </div>
         <p v-if="chatError && chatMessages.length" class="chat-error" role="alert">{{ chatError }}</p>
         <div v-if="replyTarget" class="reply-preview">
@@ -650,6 +810,23 @@ loadGroupChats()
           />
           <button type="submit" :disabled="!chatDraft.trim() || isSendingMessage">
             {{ isSendingMessage ? '发送中…' : '发送' }}
+          </button>
+          <button
+            v-if="activeChat?.type === 'group'"
+            type="button"
+            class="chat-tools-toggle"
+            :aria-expanded="isGroupToolsOpen"
+            aria-controls="group-chat-tools"
+            :aria-label="isGroupToolsOpen ? '收起群聊工具栏' : '展开群聊工具栏'"
+            :title="isGroupToolsOpen ? '收起工具栏' : '展开工具栏'"
+            @click="isGroupToolsOpen = !isGroupToolsOpen"
+          >
+            <span class="desktop-tools-toggle-icon" aria-hidden="true">
+              {{ isGroupToolsOpen ? '›' : '‹' }}
+            </span>
+            <span class="mobile-tools-toggle-icon" aria-hidden="true">
+              {{ isGroupToolsOpen ? '⌃' : '⌄' }}
+            </span>
           </button>
         </form>
       </section>
@@ -1719,6 +1896,81 @@ button {
   font-size: 13px;
 }
 
+.chat-content {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.chat-message-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.chat-tools {
+  width: 220px;
+  flex: 0 0 220px;
+  margin: 14px 0 14px 18px;
+  padding: 16px;
+  border-left: 1px solid #41434a;
+}
+
+.chat-tool-button {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #41434a;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  transition: background 120ms ease;
+}
+
+.chat-tool-button:hover:not(:disabled) {
+  background: #50535c;
+}
+
+.chat-tool-button.selected {
+  background: #334d42;
+  color: #b6e3c9;
+}
+
+.leave-group-button {
+  margin-top: 16px;
+  background: #5a3438;
+}
+
+.leave-group-button:hover:not(:disabled) {
+  background: #754147;
+}
+
+.chat-tool-button:disabled:not(.selected) {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.chat-tool-confirmation,
+.chat-tool-error {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-tool-confirmation {
+  color: #b6e3c9;
+}
+
+.chat-tool-error {
+  color: #f2a6a6;
+}
+
 .chat-messages {
   display: flex;
   min-height: 0;
@@ -1877,6 +2129,27 @@ button {
   opacity: 0.55;
 }
 
+.chat-composer .chat-tools-toggle {
+  display: grid;
+  min-width: 32px;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  background: #41434a;
+  color: var(--text);
+  font-size: 21px;
+  line-height: 1;
+}
+
+.chat-composer .chat-tools-toggle:hover {
+  background: #50535c;
+}
+
+.mobile-tools-toggle-icon {
+  display: none;
+}
+
 .chat-error {
   margin: 0 0 8px;
   color: #f2a6a6;
@@ -1953,6 +2226,61 @@ button {
 
   .chat-view {
     padding: 0 14px 14px;
+  }
+
+  .chat-content {
+    display: contents;
+  }
+
+  .chat-message-pane {
+    order: 1;
+    flex: 1;
+  }
+
+  .chat-error {
+    order: 2;
+  }
+
+  .reply-preview {
+    order: 3;
+  }
+
+  .chat-composer {
+    order: 4;
+  }
+
+  .chat-tools {
+    order: 5;
+  }
+
+  .chat-tools {
+    display: flex;
+    width: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+    padding: 10px 0 0;
+    border-top: 1px solid #41434a;
+    border-left: 0;
+  }
+
+  .chat-tool-button {
+    width: auto;
+    min-height: 36px;
+  }
+
+  .chat-tool-confirmation,
+  .chat-tool-error {
+    margin: 8px 0 0;
+  }
+
+  .desktop-tools-toggle-icon {
+    display: none;
+  }
+
+  .mobile-tools-toggle-icon {
+    display: inline;
   }
 
   .group-card-grid {
