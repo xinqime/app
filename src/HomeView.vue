@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps<{
   username: string
@@ -11,16 +11,29 @@ const emit = defineEmits<{
 
 type GroupChat = {
   id: string
+  kind: 'interest' | 'spectator'
   name: string
   description: string
   tags: string[]
   memberCount: number
   onlineCount: number
+  heat: number
   icon: string
   color: string
   joined: boolean
+  watching?: boolean
+  sourceGroupId?: string
+  sourceGroupName?: string
   newMessageCount?: number
+  unreadMentionCount?: number
   lastMessageAt?: string
+}
+
+type ChatMember = {
+  id: string
+  name: string
+  avatar: string
+  color: string
 }
 
 type ChatMessage = {
@@ -31,6 +44,9 @@ type ChatMessage = {
   color: string
   content: string
   createdAt?: string
+  isSourceMessage?: boolean
+  sourceGroupName?: string
+  mentions?: string[]
   replyTo?: {
     senderId: string
     content: string
@@ -42,12 +58,20 @@ type ChatTarget = {
   name: string
   avatar: string
   color: string
+  mode?: 'group' | 'spectate'
 }
 
-const activeView = ref<'groups' | 'chat'>('groups')
+const activeView = ref<'groups' | 'spectate' | 'chat'>('groups')
 const activeChat = ref<ChatTarget | null>(null)
 const chatMessages = ref<ChatMessage[]>([])
+const chatMessagesElement = ref<HTMLElement | null>(null)
 const chatDraft = ref('')
+const isMentionPickerOpen = ref(false)
+const isLoadingMentionMembers = ref(false)
+const mentionMembers = ref<ChatMember[]>([])
+const mentionLoadError = ref('')
+const selectedMentions = ref<ChatMember[]>([])
+const unreadMentionMessageIds = ref(new Set<string>())
 const replyTarget = ref<ChatMessage | null>(null)
 const activeMessageMenuKey = ref('')
 const blockedSenderIds = ref(new Set<string>())
@@ -56,18 +80,22 @@ const isLoadingMessages = ref(false)
 const isSendingMessage = ref(false)
 const chatError = ref('')
 const groupChats = ref<GroupChat[]>([])
+const spectatorGroups = ref<GroupChat[]>([])
 const selectedInterest = ref('全部')
 const groupLoadError = ref('')
 const joiningGroupId = ref('')
 const groupJoinError = ref('')
-const wantsToStayTomorrow = ref(false)
+const wantsToStay = ref(false)
 const isLoadingStayTomorrow = ref(false)
 const isSettingStayTomorrow = ref(false)
 const stayTomorrowError = ref('')
+const spectatorConversionError = ref('')
+const isConvertingSpectator = ref(false)
 const isLeavingGroup = ref(false)
 const groupLeaveError = ref('')
 const isGroupToolsOpen = ref(false)
 const isJoinedGroupsOpen = ref(true)
+const isJoinedSpectatorsOpen = ref(true)
 const groupLocalVersions = new Map<string, number>()
 let groupListRequestVersion = 0
 
@@ -75,14 +103,24 @@ const interestTags = computed(() => [
   '全部',
   ...new Set(groupChats.value.flatMap((group) => group.tags)),
 ])
+function isInterestGroup(group: GroupChat) {
+  return group.kind === 'interest'
+}
+
+function isSpectatorGroup(group: GroupChat) {
+  return group.kind === 'spectator'
+}
+
 const visibleGroupChats = computed(() =>
   groupChats.value.filter(
-    (group) => selectedInterest.value === '全部' || group.tags.includes(selectedInterest.value),
+    (group) =>
+      isInterestGroup(group) &&
+      (selectedInterest.value === '全部' || group.tags.includes(selectedInterest.value)),
   ),
 )
 const joinedGroupChats = computed(() =>
   groupChats.value
-    .filter((group) => group.joined)
+    .filter((group) => isInterestGroup(group) && group.joined)
     .sort((left, right) => {
       const unreadDifference = Number((right.newMessageCount ?? 0) > 0) -
         Number((left.newMessageCount ?? 0) > 0)
@@ -90,6 +128,17 @@ const joinedGroupChats = computed(() =>
       return (Date.parse(right.lastMessageAt || '') || 0) -
         (Date.parse(left.lastMessageAt || '') || 0)
     }),
+)
+const watchedGroupChats = computed(() =>
+  spectatorGroups.value
+    .filter((group) => isSpectatorGroup(group) && group.watching)
+    .sort((left, right) => right.heat - left.heat),
+)
+const currentSpectatorGroup = computed(() => watchedGroupChats.value[0])
+const visibleSpectatorChats = computed(() =>
+  spectatorGroups.value
+    .filter(isSpectatorGroup)
+    .sort((left, right) => right.heat - left.heat),
 )
 
 async function loadGroupChats(silent = false) {
@@ -104,15 +153,26 @@ async function loadGroupChats(silent = false) {
       code?: number
       message?: string
       msg?: string
-      data?: { groupChats?: GroupChat[] }
+      data?: { groupChats?: GroupChat[]; spectatorGroups?: GroupChat[] }
     }
 
-    if (!response.ok || result.code !== 0 || !result.data?.groupChats) {
-      throw new Error(result.message || result.msg || '加载群聊失败')
+    if (
+      !response.ok ||
+      result.code !== 0 ||
+      !result.data?.groupChats ||
+      !result.data.spectatorGroups
+    ) {
+      throw new Error(result.message || result.msg || '加载兴趣列表失败')
     }
 
     if (requestVersion !== groupListRequestVersion) return
-    groupChats.value = result.data.groupChats.map((group) => {
+    const allGroups = new Map(
+      [...result.data.groupChats, ...result.data.spectatorGroups]
+        .map((group) => [group.id, group]),
+    )
+    groupChats.value = [...allGroups.values()]
+      .filter(isInterestGroup)
+      .map((group) => {
       const currentGroup = groupChats.value.find((item) => item.id === group.id)
       if (
         currentGroup &&
@@ -121,15 +181,17 @@ async function loadGroupChats(silent = false) {
         return {
           ...group,
           newMessageCount: currentGroup.newMessageCount,
+          unreadMentionCount: currentGroup.unreadMentionCount,
           lastMessageAt: currentGroup.lastMessageAt,
         }
       }
       return group
     })
+    spectatorGroups.value = [...allGroups.values()].filter(isSpectatorGroup)
   } catch (error) {
-    const message = error instanceof Error ? error.message : '加载群聊失败，请稍后重试'
+    const message = error instanceof Error ? error.message : '加载兴趣列表失败，请稍后重试'
     if (silent) {
-      console.error('同步群聊失败:', error)
+      console.error('同步兴趣列表失败:', error)
     } else {
       groupLoadError.value = message
     }
@@ -151,21 +213,27 @@ function isIncomingGroupMessage(
 ): value is {
   type: 'message'
   groupId: string
+  groupType?: 'spectator'
   message: ChatMessage
   unreadCount?: number
+  unreadMentionCount?: number
 } {
   if (typeof value !== 'object' || value === null) return false
   const event = value as Record<string, unknown>
   if (event.type !== 'message' || typeof event.groupId !== 'string') return false
+  if (event.groupType !== undefined && event.groupType !== 'spectator') return false
   if (typeof event.message !== 'object' || event.message === null) return false
   const message = event.message as Record<string, unknown>
   return (event.unreadCount === undefined || typeof event.unreadCount === 'number') &&
+    (event.unreadMentionCount === undefined || typeof event.unreadMentionCount === 'number') &&
     typeof message.id === 'string' &&
     typeof message.senderId === 'string' &&
     typeof message.senderName === 'string' &&
     typeof message.avatar === 'string' &&
     typeof message.color === 'string' &&
-    typeof message.content === 'string'
+    typeof message.content === 'string' &&
+    (message.mentions === undefined ||
+      (Array.isArray(message.mentions) && message.mentions.every((id) => typeof id === 'string')))
 }
 
 function updateGroupLocalVersion(groupId: string) {
@@ -174,10 +242,20 @@ function updateGroupLocalVersion(groupId: string) {
   return nextVersion
 }
 
+function scrollChatToBottom() {
+  void nextTick(() => {
+    const element = chatMessagesElement.value
+    if (element) element.scrollTop = element.scrollHeight
+  })
+}
+
 function markGroupMessageRead(groupId: string, lastReadMessageId: string) {
   const group = groupChats.value.find((item) => item.id === groupId)
   const localVersion = updateGroupLocalVersion(groupId)
-  if (group) group.newMessageCount = 0
+  if (group) {
+    group.newMessageCount = 0
+    group.unreadMentionCount = 0
+  }
 
   return fetch(`/api/group-chats/${groupId}/read`, {
     method: 'POST',
@@ -188,17 +266,19 @@ function markGroupMessageRead(groupId: string, lastReadMessageId: string) {
       code?: number
       message?: string
       msg?: string
-      data?: { newMessageCount?: number }
+      data?: { newMessageCount?: number; unreadMentionCount?: number }
     }
     if (
       !response.ok ||
       result.code !== 0 ||
-      typeof result.data?.newMessageCount !== 'number'
+      typeof result.data?.newMessageCount !== 'number' ||
+      typeof result.data.unreadMentionCount !== 'number'
     ) {
-      throw new Error(result.message || result.msg || '标记群聊已读失败')
+      throw new Error(result.message || result.msg || '标记兴趣消息已读失败')
     }
     if (groupLocalVersions.get(groupId) === localVersion && group) {
       group.newMessageCount = result.data.newMessageCount
+      group.unreadMentionCount = result.data.unreadMentionCount
     }
   })
 }
@@ -207,6 +287,7 @@ function handleIncomingGroupMessage(
   groupId: string,
   message: ChatMessage,
   unreadCount?: number,
+  unreadMentionCount?: number,
 ) {
   const group = groupChats.value.find((item) => item.id === groupId && item.joined)
   if (!group) return
@@ -217,9 +298,10 @@ function handleIncomingGroupMessage(
   if (isCurrentGroupOpen) {
     if (!chatMessages.value.some((item) => item.id === message.id)) {
       chatMessages.value.push(message)
+      scrollChatToBottom()
     }
     void markGroupMessageRead(groupId, message.id).catch((error: unknown) => {
-      chatError.value = error instanceof Error ? error.message : '标记群聊已读失败'
+      chatError.value = error instanceof Error ? error.message : '标记兴趣消息已读失败'
     })
     return
   }
@@ -228,6 +310,27 @@ function handleIncomingGroupMessage(
     group.newMessageCount = unreadCount
   } else if (message.senderId !== currentUserId.value) {
     group.newMessageCount = (group.newMessageCount ?? 0) + 1
+  }
+  if (typeof unreadMentionCount === 'number') {
+    group.unreadMentionCount = unreadMentionCount
+  } else if (message.senderId !== currentUserId.value && message.mentions?.includes(currentUserId.value)) {
+    group.unreadMentionCount = (group.unreadMentionCount ?? 0) + 1
+  }
+}
+
+function handleIncomingSpectatorMessage(groupId: string, message: ChatMessage) {
+  const group = spectatorGroups.value.find((item) => item.id === groupId && item.watching)
+  if (!group) return
+
+  group.lastMessageAt = message.createdAt || new Date().toISOString()
+  if (
+    activeView.value === 'chat' &&
+    activeChat.value?.id === groupId &&
+    activeChat.value.mode === 'spectate' &&
+    !chatMessages.value.some((item) => item.id === message.id)
+  ) {
+    chatMessages.value.push(message)
+    scrollChatToBottom()
   }
 }
 
@@ -259,11 +362,20 @@ function connectGroupChatSocket() {
     try {
       payload = JSON.parse(String(event.data))
     } catch (error) {
-      console.error('收到无效的群聊 WebSocket 消息:', error)
+      console.error('收到无效的兴趣 WebSocket 消息:', error)
       return
     }
     if (!isIncomingGroupMessage(payload)) return
-    handleIncomingGroupMessage(payload.groupId, payload.message, payload.unreadCount)
+    if (payload.groupType === 'spectator') {
+      handleIncomingSpectatorMessage(payload.groupId, payload.message)
+    } else {
+      handleIncomingGroupMessage(
+        payload.groupId,
+        payload.message,
+        payload.unreadCount,
+        payload.unreadMentionCount,
+      )
+    }
   })
   socket.addEventListener('close', () => {
     if (groupChatSocket === socket) groupChatSocket = null
@@ -367,12 +479,14 @@ function unblockMessageSender(message: ChatMessage) {
   activeMessageMenuKey.value = ''
 }
 
-async function loadStayTomorrowPreference(target: ChatTarget) {
+async function loadStayPreference(target: ChatTarget) {
   isLoadingStayTomorrow.value = true
   stayTomorrowError.value = ''
   try {
     const response = await fetch(
-      `/api/group-chats/${target.id}/see-you-tomorrow?userId=${encodeURIComponent(currentUserId.value)}`,
+      target.mode === 'spectate'
+        ? `/api/spectator-groups/${target.id}/next-minute?userId=${encodeURIComponent(currentUserId.value)}`
+        : `/api/group-chats/${target.id}/see-you-tomorrow?userId=${encodeURIComponent(currentUserId.value)}`,
     )
     const result = await response.json() as {
       code?: number
@@ -381,17 +495,17 @@ async function loadStayTomorrowPreference(target: ChatTarget) {
       data?: { wantsToStayTomorrow?: boolean }
     }
     if (!response.ok || result.code !== 0 || typeof result.data?.wantsToStayTomorrow !== 'boolean') {
-      throw new Error(result.message || result.msg || '加载群聊意愿失败')
+      throw new Error(result.message || result.msg || '加载兴趣延续意愿失败')
     }
-    if (activeChat.value?.id === target.id) {
-      wantsToStayTomorrow.value = result.data.wantsToStayTomorrow
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
+      wantsToStay.value = result.data.wantsToStayTomorrow
     }
   } catch (error) {
-    if (activeChat.value?.id === target.id) {
-      stayTomorrowError.value = error instanceof Error ? error.message : '加载群聊意愿失败，请稍后重试'
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
+      stayTomorrowError.value = error instanceof Error ? error.message : '加载兴趣延续意愿失败，请稍后重试'
     }
   } finally {
-    if (activeChat.value?.id === target.id) {
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
       isLoadingStayTomorrow.value = false
     }
   }
@@ -402,49 +516,70 @@ async function openChat(target: ChatTarget) {
   activeView.value = 'chat'
   const selectedGroup = groupChats.value.find((group) => group.id === target.id)
   updateGroupLocalVersion(target.id)
-  if (selectedGroup) selectedGroup.newMessageCount = 0
+  if (target.mode !== 'spectate' && selectedGroup) {
+    selectedGroup.newMessageCount = 0
+    selectedGroup.unreadMentionCount = 0
+  }
   chatMessages.value = []
+  unreadMentionMessageIds.value = new Set()
+  isMentionPickerOpen.value = false
+  mentionMembers.value = []
+  selectedMentions.value = []
   activeMessageMenuKey.value = ''
   chatError.value = ''
   replyTarget.value = null
-  wantsToStayTomorrow.value = false
+  wantsToStay.value = false
+  isGroupToolsOpen.value = false
   isLoadingStayTomorrow.value = true
   stayTomorrowError.value = ''
+  spectatorConversionError.value = ''
   groupLeaveError.value = ''
-  void loadStayTomorrowPreference(target)
+  void loadStayPreference(target)
   isLoadingMessages.value = true
   try {
-    const response = await fetch(`/api/group-chats/${target.id}/messages`)
+    const url = target.mode === 'spectate'
+      ? `/api/spectator-groups/${target.id}/messages?userId=${encodeURIComponent(currentUserId.value)}`
+      : `/api/group-chats/${target.id}/messages?userId=${encodeURIComponent(currentUserId.value)}`
+    const response = await fetch(url)
     const result = await response.json() as {
       code?: number
       message?: string
       msg?: string
-      data?: { messages?: ChatMessage[] }
+      data?: { messages?: ChatMessage[]; unreadMentionMessageIds?: string[] }
     }
     if (!response.ok || result.code !== 0 || !result.data?.messages) {
       throw new Error(result.message || result.msg || '加载聊天记录失败')
     }
+    if (activeChat.value?.id !== target.id || activeChat.value.mode !== target.mode) return
     const fetchedMessageIds = new Set(result.data.messages.map((message) => message.id))
     const liveMessagesReceivedWhileLoading = chatMessages.value.filter(
       (message) => !fetchedMessageIds.has(message.id),
     )
     chatMessages.value = [...result.data.messages, ...liveMessagesReceivedWhileLoading]
-    const lastReadMessageId = chatMessages.value.at(-1)?.id
+    unreadMentionMessageIds.value = new Set(
+      target.mode !== 'spectate' ? result.data.unreadMentionMessageIds ?? [] : [],
+    )
+    const lastReadMessageId = target.mode !== 'spectate' ? chatMessages.value.at(-1)?.id : undefined
     if (lastReadMessageId) {
       await markGroupMessageRead(target.id, lastReadMessageId)
     }
   } catch (error) {
-    chatError.value = error instanceof Error ? error.message : '加载聊天记录失败，请稍后重试'
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
+      chatError.value = error instanceof Error ? error.message : '加载聊天记录失败，请稍后重试'
+    }
   } finally {
-    isLoadingMessages.value = false
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
+      isLoadingMessages.value = false
+      scrollChatToBottom()
+    }
   }
 }
 
-async function setStayTomorrowPreference() {
+async function setStayPreference() {
   const target = activeChat.value
   if (
     !target ||
-    wantsToStayTomorrow.value ||
+    wantsToStay.value ||
     isLeavingGroup.value ||
     isSettingStayTomorrow.value
   ) return
@@ -452,11 +587,16 @@ async function setStayTomorrowPreference() {
   isSettingStayTomorrow.value = true
   stayTomorrowError.value = ''
   try {
-    const response = await fetch(`/api/group-chats/${target.id}/see-you-tomorrow`, {
+    const response = await fetch(
+      target.mode === 'spectate'
+        ? `/api/spectator-groups/${target.id}/next-minute`
+        : `/api/group-chats/${target.id}/see-you-tomorrow`,
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: currentUserId.value }),
-    })
+      },
+    )
     const result = await response.json() as {
       code?: number
       message?: string
@@ -464,14 +604,14 @@ async function setStayTomorrowPreference() {
       data?: { wantsToStayTomorrow?: boolean }
     }
     if (!response.ok || result.code !== 0 || result.data?.wantsToStayTomorrow !== true) {
-      throw new Error(result.message || result.msg || '提交群聊意愿失败')
+      throw new Error(result.message || result.msg || '提交兴趣延续意愿失败')
     }
-    if (activeChat.value?.id === target.id) {
-      wantsToStayTomorrow.value = true
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
+      wantsToStay.value = true
     }
   } catch (error) {
-    if (activeChat.value?.id === target.id) {
-      stayTomorrowError.value = error instanceof Error ? error.message : '提交群聊意愿失败，请稍后重试'
+    if (activeChat.value?.id === target.id && activeChat.value.mode === target.mode) {
+      stayTomorrowError.value = error instanceof Error ? error.message : '提交兴趣延续意愿失败，请稍后重试'
     }
   } finally {
     isSettingStayTomorrow.value = false
@@ -485,11 +625,17 @@ async function leaveGroupChat() {
   isLeavingGroup.value = true
   groupLeaveError.value = ''
   try {
-    const response = await fetch(`/api/group-chats/${target.id}/leave`, {
+    const isSpectating = target.mode === 'spectate'
+    const response = await fetch(
+      isSpectating
+        ? `/api/spectator-groups/${target.id}/leave`
+        : `/api/group-chats/${target.id}/leave`,
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: currentUserId.value }),
-    })
+      },
+    )
     const result = await response.json() as {
       code?: number
       message?: string
@@ -497,14 +643,19 @@ async function leaveGroupChat() {
       data?: { groupChat?: GroupChat }
     }
     if (!response.ok || result.code !== 0 || !result.data?.groupChat) {
-      throw new Error(result.message || result.msg || '退出群聊失败')
+      throw new Error(result.message || result.msg || '退出兴趣失败')
     }
-    const index = groupChats.value.findIndex((group) => group.id === target.id)
-    if (index !== -1) groupChats.value[index] = result.data.groupChat
+    if (isSpectating) {
+      const index = spectatorGroups.value.findIndex((group) => group.id === target.id)
+      if (index !== -1) spectatorGroups.value[index] = result.data.groupChat
+    } else {
+      const index = groupChats.value.findIndex((group) => group.id === target.id)
+      if (index !== -1) groupChats.value[index] = result.data.groupChat
+    }
     closeChat()
   } catch (error) {
     if (activeChat.value?.id === target.id) {
-      groupLeaveError.value = error instanceof Error ? error.message : '退出群聊失败，请稍后重试'
+      groupLeaveError.value = error instanceof Error ? error.message : '退出兴趣失败，请稍后重试'
     }
   } finally {
     isLeavingGroup.value = false
@@ -512,18 +663,66 @@ async function leaveGroupChat() {
 }
 
 function closeChat() {
-  activeView.value = 'groups'
+  const returnView = activeChat.value?.mode === 'spectate' ? 'spectate' : 'groups'
+  activeView.value = returnView
   activeChat.value = null
   chatMessages.value = []
   activeMessageMenuKey.value = ''
   chatDraft.value = ''
+  isMentionPickerOpen.value = false
+  selectedMentions.value = []
+  unreadMentionMessageIds.value = new Set()
   replyTarget.value = null
   chatError.value = ''
-  wantsToStayTomorrow.value = false
+  wantsToStay.value = false
   isLoadingStayTomorrow.value = false
   stayTomorrowError.value = ''
   groupLeaveError.value = ''
   void loadGroupChats()
+}
+
+async function toggleMentionPicker() {
+  if (isMentionPickerOpen.value) {
+    isMentionPickerOpen.value = false
+    return
+  }
+  const target = activeChat.value
+  if (!target || target.mode === 'spectate' || isLoadingMentionMembers.value) return
+
+  isMentionPickerOpen.value = true
+  isLoadingMentionMembers.value = true
+  mentionLoadError.value = ''
+  try {
+    const response = await fetch(
+      `/api/group-chats/${target.id}/members?userId=${encodeURIComponent(currentUserId.value)}`,
+    )
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { members?: ChatMember[] }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.members) {
+      throw new Error(result.message || result.msg || '加载群友列表失败')
+    }
+    if (activeChat.value?.id === target.id) mentionMembers.value = result.data.members
+  } catch (error) {
+    mentionLoadError.value = error instanceof Error ? error.message : '加载群友列表失败，请稍后重试'
+  } finally {
+    isLoadingMentionMembers.value = false
+  }
+}
+
+function insertMention(member: ChatMember) {
+  const token = `@${member.name}`
+  if (!chatDraft.value.includes(token)) {
+    const draft = chatDraft.value.trimEnd()
+    chatDraft.value = `${draft}${draft ? ' ' : ''}${token} `
+  }
+  if (!selectedMentions.value.some((selected) => selected.id === member.id)) {
+    selectedMentions.value.push(member)
+  }
+  isMentionPickerOpen.value = false
 }
 
 async function sendChatMessage() {
@@ -534,7 +733,9 @@ async function sendChatMessage() {
   isSendingMessage.value = true
   chatError.value = ''
   try {
-    const response = await fetch(`/api/group-chats/${target.id}/messages`, {
+    const response = await fetch(
+      `${target.mode === 'spectate' ? '/api/spectator-groups' : '/api/group-chats'}/${target.id}/messages`,
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -543,6 +744,13 @@ async function sendChatMessage() {
         avatar: initials.value,
         color: '#5865f2',
         content,
+        ...(target.mode !== 'spectate'
+          ? {
+              mentions: selectedMentions.value
+                .filter((member) => content.includes(`@${member.name}`))
+                .map((member) => member.id),
+            }
+          : {}),
         createdAt: new Date().toISOString(),
         ...(replyTarget.value
           ? {
@@ -553,7 +761,8 @@ async function sendChatMessage() {
             }
           : {}),
       }),
-    })
+      },
+    )
     const result = await response.json() as {
       code?: number
       message?: string
@@ -565,10 +774,14 @@ async function sendChatMessage() {
     }
     if (!chatMessages.value.some((message) => message.id === result.data?.message?.id)) {
       chatMessages.value.push(result.data.message)
+      scrollChatToBottom()
     }
-    const group = groupChats.value.find((item) => item.id === target.id)
+    const group = target.mode === 'spectate'
+      ? spectatorGroups.value.find((item) => item.id === target.id)
+      : groupChats.value.find((item) => item.id === target.id)
     if (group) group.lastMessageAt = result.data.message.createdAt || new Date().toISOString()
     chatDraft.value = ''
+    selectedMentions.value = []
     replyTarget.value = null
   } catch (error) {
     chatError.value = error instanceof Error ? error.message : '发送消息失败，请稍后重试'
@@ -594,35 +807,127 @@ async function joinGroupChat(group: GroupChat) {
       data?: { groupChat?: GroupChat }
     }
     if (!response.ok || result.code !== 0 || !result.data?.groupChat) {
-      throw new Error(result.message || result.msg || '加入群聊失败')
+      throw new Error(result.message || result.msg || '加入兴趣失败')
     }
     const index = groupChats.value.findIndex((item) => item.id === group.id)
     if (index !== -1) groupChats.value[index] = result.data.groupChat
   } catch (error) {
-    groupJoinError.value = error instanceof Error ? error.message : '加入群聊失败，请稍后重试'
+    groupJoinError.value = error instanceof Error ? error.message : '加入兴趣失败，请稍后重试'
   } finally {
     joiningGroupId.value = ''
   }
 }
 
+async function watchGroupChat(group: GroupChat) {
+  if (group.watching) {
+    await openChat({
+      id: group.id,
+      name: group.name,
+      avatar: group.icon,
+      color: group.color,
+      mode: 'spectate',
+    })
+    return
+  }
+  if (currentSpectatorGroup.value) {
+    groupJoinError.value = '同时只能加入一个围观群，请先退出当前围观群。'
+    return
+  }
+  if (!group.sourceGroupId) {
+    groupJoinError.value = '找不到围观群对应的来源兴趣'
+    return
+  }
+  joiningGroupId.value = group.id
+  groupJoinError.value = ''
+  try {
+    const response = await fetch(`/api/group-chats/${group.sourceGroupId}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUserId.value, mode: 'spectate' }),
+    })
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { groupChat?: GroupChat }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.groupChat) {
+      throw new Error(result.message || result.msg || '加入围观失败')
+    }
+    const joinedSpectatorGroup = result.data.groupChat
+    const index = spectatorGroups.value.findIndex((item) => item.id === joinedSpectatorGroup.id)
+    if (index !== -1) spectatorGroups.value[index] = joinedSpectatorGroup
+    await openChat({
+      id: joinedSpectatorGroup.id,
+      name: joinedSpectatorGroup.name,
+      avatar: joinedSpectatorGroup.icon,
+      color: joinedSpectatorGroup.color,
+      mode: 'spectate',
+    })
+  } catch (error) {
+    groupJoinError.value = error instanceof Error ? error.message : '加入围观失败，请稍后重试'
+  } finally {
+    joiningGroupId.value = ''
+  }
+}
+
+async function convertSpectatorToInterestGroup() {
+  const target = activeChat.value
+  if (!target || target.mode !== 'spectate' || isConvertingSpectator.value) return
+
+  isConvertingSpectator.value = true
+  spectatorConversionError.value = ''
+  try {
+    const response = await fetch(`/api/spectator-groups/${target.id}/convert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUserId.value }),
+    })
+    const result = await response.json() as {
+      code?: number
+      message?: string
+      msg?: string
+      data?: { groupChat?: GroupChat }
+    }
+    if (!response.ok || result.code !== 0 || !result.data?.groupChat) {
+      throw new Error(result.message || result.msg || '转化为兴趣群失败')
+    }
+
+    groupChats.value.push(result.data.groupChat)
+    spectatorGroups.value = spectatorGroups.value.filter((group) => group.id !== target.id)
+    await openChat({
+      id: target.id,
+      name: result.data.groupChat.name,
+      avatar: target.avatar,
+      color: target.color,
+      mode: 'group',
+    })
+  } catch (error) {
+    spectatorConversionError.value = error instanceof Error ? error.message : '转化为兴趣群失败，请稍后重试'
+  } finally {
+    isConvertingSpectator.value = false
+  }
+}
 </script>
 
 <template>
   <main class="discord-shell">
-    <nav class="server-rail" aria-label="服务器">
-      <button class="rail-icon home-icon selected" aria-label="群聊" title="群聊">▦</button>
-      <div class="rail-divider"></div>
-    </nav>
-
     <aside class="dm-sidebar">
-      <button class="sidebar-search" @click="activeView = 'groups'">群聊 <span>⌘ K</span></button>
+      <button class="sidebar-search" @click="activeView = 'groups'">兴趣 <span>⌘ K</span></button>
       <div class="sidebar-nav">
         <button
           class="sidebar-link"
           :class="{ active: activeView === 'groups' }"
           @click="activeView = 'groups'"
         >
-          <span class="nav-glyph">▦</span> 群聊
+          <span class="nav-glyph">▦</span> 兴趣
+        </button>
+        <button
+          class="sidebar-link"
+          :class="{ active: activeView === 'spectate' }"
+          @click="activeView = 'spectate'"
+        >
+          <span class="nav-glyph">◉</span> 围观
         </button>
       </div>
       <div v-if="joinedGroupChats.length" class="joined-groups-section">
@@ -632,7 +937,7 @@ async function joinGroupChat(group: GroupChat) {
           aria-controls="joined-groups-list"
           @click="isJoinedGroupsOpen = !isJoinedGroupsOpen"
         >
-          <span>已加入的群聊</span>
+          <span>已加入的瞎扯淡们</span>
           <span class="joined-groups-chevron" aria-hidden="true">
             {{ isJoinedGroupsOpen ? '⌄' : '›' }}
           </span>
@@ -642,13 +947,51 @@ async function joinGroupChat(group: GroupChat) {
             v-for="group in joinedGroupChats"
             :key="group.id"
             class="dm-item joined-group"
-            @click="openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color })"
+            @click="openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color, mode: 'group' })"
           >
             <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
             <span class="joined-group-name">{{ group.name }}</span>
             <span v-if="group.newMessageCount" class="joined-group-unread">
               {{ group.newMessageCount > 99 ? '99+' : group.newMessageCount }}
             </span>
+            <span
+              v-if="group.unreadMentionCount"
+              class="joined-group-mention"
+              :aria-label="`${group.unreadMentionCount} 条未读消息提到了你`"
+            >
+              @{{ group.unreadMentionCount > 99 ? '99+' : group.unreadMentionCount }}
+            </span>
+          </button>
+        </div>
+      </div>
+      <div v-if="watchedGroupChats.length" class="joined-groups-section">
+        <button
+          class="dm-heading joined-groups-toggle"
+          :aria-expanded="isJoinedSpectatorsOpen"
+          aria-controls="joined-spectators-list"
+          @click="isJoinedSpectatorsOpen = !isJoinedSpectatorsOpen"
+        >
+          <span>已加入的瞎起哄</span>
+          <span class="joined-groups-chevron" aria-hidden="true">
+            {{ isJoinedSpectatorsOpen ? '⌄' : '›' }}
+          </span>
+        </button>
+        <div v-if="isJoinedSpectatorsOpen" id="joined-spectators-list" class="joined-groups">
+          <button
+            v-for="group in watchedGroupChats"
+            :key="group.id"
+            class="dm-item joined-group"
+            @click="openChat({
+              id: group.id,
+              name: group.name,
+              avatar: group.icon,
+              color: group.color,
+              mode: 'spectate',
+            })"
+          >
+            <span class="group-mini-icon" :style="{ '--group-color': group.color }">{{ group.icon }}</span>
+            <span class="joined-group-name">{{ group.name }}</span>
+            <span class="spectator-mini-label">围观</span>
           </button>
         </div>
       </div>
@@ -670,8 +1013,8 @@ async function joinGroupChat(group: GroupChat) {
       <header class="topbar">
         <button v-if="activeView === 'chat'" class="chat-back" aria-label="返回" @click="closeChat">‹</button>
         <div class="topbar-title">
-          <span>{{ activeView === 'groups' ? '▦' : activeChat?.avatar }}</span>
-          {{ activeView === 'groups' ? '群聊' : activeChat?.name }}
+          <span>{{ activeView === 'groups' ? '▦' : activeView === 'spectate' ? '◉' : activeChat?.avatar }}</span>
+          {{ activeView === 'groups' ? '兴趣' : activeView === 'spectate' ? '围观' : activeChat?.name }}
         </div>
         <div v-if="activeView !== 'chat'" class="topbar-divider"></div>
         <button
@@ -680,22 +1023,33 @@ async function joinGroupChat(group: GroupChat) {
           :class="{ active: activeView === 'groups' }"
           @click="activeView = 'groups'"
         >
-          群聊
+          兴趣
+        </button>
+        <button
+          v-if="activeView !== 'chat'"
+          class="topbar-action view-switch"
+          :class="{ active: activeView === 'spectate' }"
+          @click="activeView = 'spectate'"
+        >
+          围观
         </button>
         <div class="topbar-spacer"></div>
         <button v-if="activeView !== 'chat'" class="topbar-icon" aria-label="收件箱" title="收件箱">▤</button>
         <button v-if="activeView !== 'chat'" class="topbar-icon help-icon" aria-label="帮助" title="帮助">?</button>
       </header>
 
-      <div v-if="activeView === 'groups'" class="groups-layout">
+      <div v-if="activeView !== 'chat'" class="groups-layout">
         <section class="groups-main">
           <div class="groups-heading">
             <div>
-              <h1>找到你的兴趣群聊</h1>
-              <p>按兴趣标签浏览，点击即可直接加入，无需申请。<br>每天凌晨自动清除群聊，除非有人主动选择延续。</p>
+              <h1>{{ activeView === 'groups' ? '让兴趣就是兴趣' : '让热闹更加热闹' }}</h1>
+              <p v-if="activeView === 'groups'">
+                按兴趣加入讨论。<br>每天凌晨清理讨论，选择延续的除外。
+              </p>
+              <p v-else>按热度加入围观。源头消息会实时同步。<br>每三分钟清理讨论，选择延续的除外。</p>
             </div>
           </div>
-          <div class="interest-filters" role="group" aria-label="按兴趣标签筛选群聊">
+          <div v-if="activeView === 'groups'" class="interest-filters" role="group" aria-label="按兴趣标签筛选">
             <button
               v-for="tag in interestTags"
               :key="tag"
@@ -710,33 +1064,72 @@ async function joinGroupChat(group: GroupChat) {
             <strong>{{ groupLoadError }}</strong>
             <button class="retry-button" @click="loadGroupChats()">重试</button>
           </div>
-          <div v-else-if="visibleGroupChats.length" class="group-card-grid">
-            <article v-for="group in visibleGroupChats" :key="group.id" class="group-card">
+          <div
+            v-else-if="activeView === 'spectate' && currentSpectatorGroup"
+            class="group-empty-state spectator-limit-state"
+            role="status"
+          >
+            <strong>同时只能加入一个围观群</strong>
+            <p>退出当前围观后，才能搜索并加入其他围观群。</p>
+            <button
+              class="retry-button"
+              @click="openChat({
+                id: currentSpectatorGroup.id,
+                name: currentSpectatorGroup.name,
+                avatar: currentSpectatorGroup.icon,
+                color: currentSpectatorGroup.color,
+                mode: 'spectate',
+              })"
+            >
+              继续围观 {{ currentSpectatorGroup.sourceGroupName }}
+            </button>
+          </div>
+          <div v-else-if="(activeView === 'groups' ? visibleGroupChats : visibleSpectatorChats).length" class="group-card-grid">
+            <article
+              v-for="group in activeView === 'groups' ? visibleGroupChats : visibleSpectatorChats"
+              :key="group.id"
+              class="group-card"
+            >
               <div class="group-card-banner" :style="{ '--group-color': group.color }">
                 <span class="group-card-icon">{{ group.icon }}</span>
-                <span class="group-online">{{ group.onlineCount }} 人在线</span>
+                <div class="group-card-stats">
+                  <span v-if="activeView === 'spectate'" class="group-heat">
+                    🔥 {{ group.heat }}
+                  </span>
+                  <span class="group-online">{{ group.onlineCount }} 人在线</span>
+                </div>
               </div>
               <div class="group-card-content">
-                <h2>{{ group.name }}</h2>
-                <p class="group-description">{{ group.description }}</p>
+                <h2>{{ activeView === 'spectate' ? group.sourceGroupName : group.name }}</h2>
+                <p class="group-description">
+                  {{ group.description }}
+                </p>
                 <div class="group-tags" aria-label="兴趣标签">
                   <span v-for="tag in group.tags" :key="tag"># {{ tag }}</span>
                 </div>
                 <div class="group-card-footer">
                   <span>{{ group.memberCount }} 位成员</span>
                   <button
-                    :class="{ joined: group.joined }"
+                    :class="{ joined: activeView === 'groups' ? group.joined : group.watching }"
                     :disabled="joiningGroupId === group.id"
-                    @click="group.joined
-                      ? openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color })
-                      : joinGroupChat(group)"
+                    @click="activeView === 'groups'
+                      ? group.joined
+                        ? openChat({ id: group.id, name: group.name, avatar: group.icon, color: group.color, mode: 'group' })
+                        : joinGroupChat(group)
+                      : watchGroupChat(group)"
                   >
                     {{
-                      group.joined
-                        ? '进入聊天'
-                        : joiningGroupId === group.id
-                          ? '正在加入…'
-                          : '直接加入'
+                      activeView === 'groups'
+                        ? group.joined
+                          ? '进入聊天'
+                          : joiningGroupId === group.id
+                            ? '正在加入…'
+                            : '直接加入'
+                        : group.watching
+                          ? '继续围观'
+                          : joiningGroupId === group.id
+                            ? '正在加入…'
+                            : '直接加入'
                     }}
                   </button>
                 </div>
@@ -744,27 +1137,31 @@ async function joinGroupChat(group: GroupChat) {
             </article>
           </div>
           <div v-else class="group-empty-state">
-            <strong>这个兴趣标签下暂时还没有群聊</strong>
-            <p>试试其他兴趣标签。</p>
+            <strong>{{ activeView === 'groups' ? '这个兴趣标签下暂时还没有讨论' : '暂时没有可围观的讨论' }}</strong>
+            <p v-if="activeView === 'groups'">试试其他兴趣标签。</p>
           </div>
           <p v-if="groupJoinError" class="group-error" role="alert">{{ groupJoinError }}</p>
         </section>
         <aside class="group-guide">
-          <span class="group-guide-icon">✦</span>
-          <h2>加入感兴趣的群聊</h2>
-          <p>选择兴趣标签发现同好。加入后，群聊会出现在左侧列表中，你可以随时回来继续探索。</p>
+          <span class="group-guide-icon">{{ activeView === 'groups' ? '✦' : '◉' }}</span>
+          <h2>{{ activeView === 'groups' ? '加入兴趣讨论' : '围观正在发生的聊天' }}</h2>
+          <p v-if="activeView === 'groups'">瞎扯淡可以加入多个。</p>
+          <p v-else>瞎起哄可以加入一个。</p>
           <div class="group-guide-count">
-            <strong>{{ joinedGroupChats.length }}</strong>
-            <span>已加入群聊</span>
+            <strong>{{ activeView === 'groups' ? joinedGroupChats.length : watchedGroupChats.length }}</strong>
+            <span>{{ activeView === 'groups' ? '已加入的瞎扯淡们' : '已加入的瞎起哄' }}</span>
           </div>
         </aside>
       </div>
 
       <section v-else class="chat-view" aria-label="聊天">
         <div class="chat-context">
-          <span>群聊</span>
+          <span>{{ activeChat?.mode === 'spectate' ? '围观群' : '兴趣' }}</span>
           <strong>{{ activeChat?.name }}</strong>
         </div>
+        <p v-if="activeChat?.mode === 'spectate'" class="spectator-delay-notice" role="status">
+          本群成员发言和来源兴趣群消息均实时显示。
+        </p>
         <div class="chat-content">
           <div class="chat-message-pane">
             <div v-if="isLoadingMessages" class="chat-state" role="status">正在加载聊天记录…</div>
@@ -772,16 +1169,49 @@ async function joinGroupChat(group: GroupChat) {
               <strong>{{ chatError }}</strong>
               <button class="retry-button" @click="activeChat && openChat(activeChat)">重试</button>
             </div>
-            <div v-else class="chat-messages" role="log" aria-label="聊天消息">
-              <div v-if="!chatMessages.length" class="chat-state">还没有消息，发送第一条消息吧。</div>
+            <div
+              v-else
+              ref="chatMessagesElement"
+              class="chat-messages"
+              role="log"
+              aria-label="聊天消息"
+            >
+              <div v-if="!chatMessages.length" class="chat-state">
+                {{ activeChat?.mode === 'spectate' ? '还没有可展示的消息，请稍后再来围观。' : '还没有消息，发送第一条消息吧。' }}
+              </div>
               <article
                 v-for="message in chatMessages"
                 :key="message.id"
                 class="chat-message"
-                :class="{ 'own-message': message.senderId === currentUserId }"
+                :class="{
+                  'own-message': message.senderId === currentUserId && !message.isSourceMessage,
+                  'mentioned-you': message.mentions?.includes(currentUserId),
+                  'unread-mention': unreadMentionMessageIds.has(message.id),
+                }"
               >
-                <template v-if="message.senderId === currentUserId">
+                <template v-if="activeChat?.mode === 'spectate'">
                   <div class="chat-message-body">
+                    <span v-if="message.isSourceMessage" class="source-message-label">
+                      来源于{{ message.sourceGroupName }}
+                    </span>
+                    <button
+                      v-if="message.replyTo"
+                      type="button"
+                      class="message-reply-context"
+                      :class="{ 'message-masked': isReplyPreviewMasked(message) }"
+                      :aria-label="isReplyPreviewMasked(message) ? '已屏蔽的引用内容，点击查看原文' : '查看引用内容'"
+                      @click="toggleReplyPreview(message)"
+                    >
+                      回复内容：{{ message.replyTo.content }}
+                    </button>
+                    <p>{{ message.content }}</p>
+                  </div>
+                </template>
+                <template v-else-if="message.senderId === currentUserId">
+                  <div class="chat-message-body">
+                    <span v-if="message.isSourceMessage" class="source-message-label">
+                      来源于{{ message.sourceGroupName }}
+                    </span>
                     <button
                       v-if="message.replyTo"
                       type="button"
@@ -801,6 +1231,12 @@ async function joinGroupChat(group: GroupChat) {
                   </span>
                   <div class="chat-message-body">
                     <strong class="chat-sender-id">{{ message.senderId }}</strong>
+                    <span v-if="message.mentions?.includes(currentUserId)" class="mention-notice">
+                      提到了你
+                    </span>
+                    <span v-if="message.isSourceMessage" class="source-message-label">
+                      来源于{{ message.sourceGroupName }}
+                    </span>
                     <button
                       v-if="message.replyTo"
                       type="button"
@@ -854,21 +1290,29 @@ async function joinGroupChat(group: GroupChat) {
             v-if="isGroupToolsOpen"
             id="group-chat-tools"
             class="chat-tools"
-            aria-label="群聊工具"
+            aria-label="兴趣工具"
           >
             <button
               class="chat-tool-button"
-              :class="{ selected: wantsToStayTomorrow }"
-              :aria-pressed="wantsToStayTomorrow"
-              title="延续群聊到明天"
-              :disabled="wantsToStayTomorrow || isLoadingStayTomorrow || isSettingStayTomorrow || isLeavingGroup"
-              @click="setStayTomorrowPreference"
+              :class="{ selected: wantsToStay }"
+              :aria-pressed="wantsToStay"
+              :title="activeChat?.mode === 'spectate' ? '延续围观群到下三分钟' : '延续兴趣到明天'"
+              :disabled="wantsToStay || isLoadingStayTomorrow || isSettingStayTomorrow || isLeavingGroup"
+              @click="setStayPreference"
             >
               <span aria-hidden="true">☀</span>
-              {{ wantsToStayTomorrow ? '明天见 ✓' : '明天见' }}
+              {{
+                activeChat?.mode === 'spectate'
+                  ? wantsToStay ? '下三分钟见 ✓' : '下三分钟见'
+                  : wantsToStay ? '明天见 ✓' : '明天见'
+              }}
             </button>
-            <p v-if="wantsToStayTomorrow" class="chat-tool-confirmation" role="status">
-              已告诉群聊：你明天还会在。
+            <p v-if="wantsToStay" class="chat-tool-confirmation" role="status">
+              {{
+                activeChat?.mode === 'spectate'
+                  ? '已告诉瞎起哄：你下三分钟还会在。'
+                  : '已告诉闲扯淡：你明天还会在。'
+              }}
             </p>
             <p v-if="stayTomorrowError" class="chat-tool-error" role="alert">
               {{ stayTomorrowError }}
@@ -880,10 +1324,21 @@ async function joinGroupChat(group: GroupChat) {
               @click="leaveGroupChat"
             >
               <span aria-hidden="true">↪</span>
-              {{ isLeavingGroup ? '正在退出…' : '退出群聊' }}
+              {{ isLeavingGroup ? '正在退出…' : activeChat?.mode === 'spectate' ? '立刻退出' : '立刻退出' }}
             </button>
             <p v-if="groupLeaveError" class="chat-tool-error" role="alert">
               {{ groupLeaveError }}
+            </p>
+            <button
+              v-if="activeChat?.mode === 'spectate'"
+              class="chat-tool-button convert-spectator-button"
+              :disabled="isConvertingSpectator || isLeavingGroup"
+              @click="convertSpectatorToInterestGroup"
+            >
+              {{ isConvertingSpectator ? '正在转化…' : '转化为兴趣群' }}
+            </button>
+            <p v-if="spectatorConversionError" class="chat-tool-error" role="alert">
+              {{ spectatorConversionError }}
             </p>
           </aside>
         </div>
@@ -896,6 +1351,39 @@ async function joinGroupChat(group: GroupChat) {
           <button type="button" aria-label="取消回复" @click="replyTarget = null">×</button>
         </div>
         <form class="chat-composer" @submit.prevent="sendChatMessage">
+          <div v-if="activeChat?.mode !== 'spectate'" class="mention-picker">
+            <button
+              type="button"
+              class="mention-picker-trigger"
+              aria-label="提及群友"
+              title="提及群友"
+              :aria-expanded="isMentionPickerOpen"
+              @click="toggleMentionPicker"
+            >
+              @
+            </button>
+            <div v-if="isMentionPickerOpen" class="mention-menu" role="listbox" aria-label="选择要提及的群友">
+              <span class="mention-menu-heading">选择群友</span>
+              <span v-if="isLoadingMentionMembers" class="mention-menu-state">正在加载群友…</span>
+              <span v-else-if="mentionLoadError" class="mention-menu-state mention-menu-error" role="alert">
+                {{ mentionLoadError }}
+              </span>
+              <span v-else-if="!mentionMembers.length" class="mention-menu-state">暂时没有可提及的群友</span>
+              <button
+                v-for="member in mentionMembers"
+                :key="member.id"
+                type="button"
+                class="mention-member-option"
+                role="option"
+                @click="insertMention(member)"
+              >
+                <span class="mention-member-avatar" :style="{ '--avatar-color': member.color }">
+                  {{ member.avatar }}
+                </span>
+                <span>{{ member.name }}</span>
+              </button>
+            </div>
+          </div>
           <input
             v-model="chatDraft"
             type="text"
@@ -913,7 +1401,7 @@ async function joinGroupChat(group: GroupChat) {
             class="chat-tools-toggle"
             :aria-expanded="isGroupToolsOpen"
             aria-controls="group-chat-tools"
-            :aria-label="isGroupToolsOpen ? '收起群聊工具栏' : '展开群聊工具栏'"
+            :aria-label="isGroupToolsOpen ? '收起兴趣工具栏' : '展开兴趣工具栏'"
             :title="isGroupToolsOpen ? '收起工具栏' : '展开工具栏'"
             @click="isGroupToolsOpen = !isGroupToolsOpen"
           >
@@ -932,7 +1420,6 @@ async function joinGroupChat(group: GroupChat) {
 
 <style scoped>
 .discord-shell {
-  --rail: #1e1f22;
   --sidebar: #2b2d31;
   --canvas: #313338;
   --surface: #383a40;
@@ -961,53 +1448,6 @@ input {
 button {
   border: 0;
   cursor: pointer;
-}
-
-.server-rail {
-  z-index: 1;
-  display: flex;
-  width: 72px;
-  flex: 0 0 72px;
-  align-items: center;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 0;
-  background: var(--rail);
-}
-
-.rail-icon {
-  position: relative;
-  display: grid;
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--sidebar);
-  color: #dbdee1;
-  font-size: 19px;
-  font-weight: 700;
-  transition: border-radius 150ms ease, background 150ms ease, color 150ms ease;
-}
-
-.rail-icon:hover,
-.rail-icon.selected {
-  border-radius: 16px;
-  background: var(--accent);
-  color: white;
-}
-
-.home-icon {
-  background: var(--accent);
-  font-size: 24px;
-}
-
-.rail-divider {
-  width: 32px;
-  height: 2px;
-  margin: 2px 0;
-  border-radius: 2px;
-  background: #35363c;
 }
 
 .dm-sidebar {
@@ -1349,6 +1789,22 @@ button {
   text-align: center;
 }
 
+.joined-group-mention {
+  padding: 2px 6px;
+  border: 1px solid #a87ce5;
+  border-radius: 10px;
+  background: #49365f;
+  color: #ead9ff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.spectator-mini-label {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
 .group-mini-icon {
   display: grid;
   width: 28px;
@@ -1466,6 +1922,21 @@ button {
   font-size: 10px;
 }
 
+.group-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.group-heat {
+  padding: 5px 8px;
+  border-radius: 12px;
+  background: rgb(25 26 30 / 50%);
+  color: #ffd27a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .group-card-content {
   padding: 15px;
 }
@@ -1577,6 +2048,21 @@ button {
   background: #2b2d31;
 }
 
+.spectator-delay-notice {
+  margin: 0;
+  padding: 8px 18px;
+  background: #292a30;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-message-label {
+  display: inline-block;
+  margin-top: 5px;
+  color: #f0b35b;
+  font-size: 10px;
+}
+
 .group-guide-count strong {
   font-size: 20px;
 }
@@ -1660,8 +2146,11 @@ button {
 }
 
 .chat-tools {
+  display: flex;
   width: 220px;
   flex: 0 0 220px;
+  flex-direction: column;
+  gap: 12px;
   margin: 14px 0 14px 18px;
   padding: 16px;
   border-left: 1px solid #41434a;
@@ -1693,7 +2182,6 @@ button {
 }
 
 .leave-group-button {
-  margin-top: 16px;
   background: #5a3438;
 }
 
@@ -1708,7 +2196,7 @@ button {
 
 .chat-tool-confirmation,
 .chat-tool-error {
-  margin: 10px 0 0;
+  margin: 0;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1729,6 +2217,11 @@ button {
   gap: 18px;
   overflow-y: auto;
   padding: 22px 4px;
+  scrollbar-width: none;
+}
+
+.chat-messages::-webkit-scrollbar {
+  display: none;
 }
 
 .chat-message {
@@ -1754,6 +2247,32 @@ button {
   border-radius: 16px 16px 4px 16px;
   background: #5865f2;
   color: white;
+}
+
+.chat-message.mentioned-you .chat-message-body {
+  padding: 8px 10px;
+  border-left: 3px solid #b78bfa;
+  border-radius: 6px;
+  background: #393146;
+}
+
+.chat-message.unread-mention .chat-message-body {
+  box-shadow: 0 0 0 1px #b78bfa66;
+}
+
+.mention-notice {
+  display: block;
+  margin-top: 3px;
+  color: #d7b8ff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chat-message:not(.own-message) .chat-message-body > p,
+.chat-message:not(.own-message) .chat-reply-trigger > p {
+  padding: 10px 13px;
+  border-radius: 16px 16px 16px 4px;
+  background: #383a40;
 }
 
 .chat-avatar {
@@ -1871,6 +2390,7 @@ button {
 }
 
 .chat-composer {
+  position: relative;
   display: flex;
   min-height: 48px;
   align-items: center;
@@ -1895,6 +2415,84 @@ button {
 
 .chat-composer input::placeholder {
   color: var(--subtle);
+}
+
+.mention-picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.chat-composer .mention-picker-trigger {
+  min-width: 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #696d78;
+  background: #41434a;
+  color: #d8c0ff;
+  font-size: 16px;
+}
+
+.chat-composer .mention-picker-trigger:hover,
+.chat-composer .mention-picker-trigger[aria-expanded="true"] {
+  background: #514266;
+}
+
+.mention-menu {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 10px);
+  left: 0;
+  display: flex;
+  width: 240px;
+  max-height: 280px;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid #4b4d55;
+  border-radius: 8px;
+  background: #2b2d31;
+  box-shadow: 0 8px 24px #0006;
+}
+
+.mention-menu-heading,
+.mention-menu-state {
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mention-menu-error {
+  color: #f2a6a6;
+}
+
+.chat-composer .mention-member-option {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 7px 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.chat-composer .mention-member-option:hover {
+  background: #404249;
+}
+
+.mention-member-avatar {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--avatar-color, #5865f2);
+  color: white;
+  font-size: 11px;
 }
 
 .chat-composer button {
@@ -2034,6 +2632,7 @@ button {
     width: auto;
     flex: 0 0 auto;
     flex-wrap: wrap;
+    flex-direction: row;
     gap: 8px;
     margin: 0;
     padding: 10px 0 0;
@@ -2077,17 +2676,6 @@ button {
 @media (max-width: 480px) {
   .discord-shell {
     min-width: 320px;
-  }
-
-  .server-rail {
-    width: 58px;
-    flex-basis: 58px;
-  }
-
-  .rail-icon {
-    width: 42px;
-    height: 42px;
-    flex-basis: 42px;
   }
 
   .topbar-divider,
