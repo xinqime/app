@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps<{
   username: string
+  userId: string
 }>()
 
 const emit = defineEmits<{
@@ -200,7 +201,7 @@ async function loadGroupChats(silent = false) {
 
 const displayName = computed(() => props.username || '新朋友')
 const initials = computed(() => displayName.value.slice(0, 1).toUpperCase())
-const currentUserId = computed(() => `${displayName.value.toLowerCase()}#0001`)
+const currentUserId = computed(() => props.userId)
 
 let groupChatSocket: WebSocket | null = null
 let socketReconnectTimer: ReturnType<typeof setTimeout> | undefined
@@ -1004,7 +1005,7 @@ async function convertSpectatorToInterestGroup() {
           </span>
         </div>
         <div class="profile-actions">
-          <button aria-label="退出登录" title="退出登录" @click="emit('logout')">↪</button>
+          <button aria-label="退出" title="退出" @click="emit('logout')">↪</button>
         </div>
       </div>
     </aside>

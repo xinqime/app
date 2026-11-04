@@ -1,10 +1,10 @@
 # app
 
-This template should help get you started developing with Vue 3 in Vite.
+This frontend is built with Vue 3 and Vite.
 
-The app includes a login/register screen and a group-chat home page.
-After a successful login, the app navigates to `/home`. When mock authentication is
-enabled with `VITE_USE_MOCK=true`, use `admin` / `123456` to sign in.
+The app opens with a welcome page and a group-chat home page. Selecting **开始**
+creates a temporary guest ID in browser storage and navigates to `/home`; no
+account registration or login is required.
 
 The home page includes an interest-tag-based group chat directory. Group chat
 mock data, direct-join responses, and joined-group conversations are served by
